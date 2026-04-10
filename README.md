@@ -52,12 +52,10 @@ ancestrally aware (genotype PC adjustment), and structured for downstream analys
 
 ### 1 — Pipeline architecture
 
-![Phase 1 and Phase 2 pipeline](docs/images/pipeline_overview.png)
 
 Schematic of the two-phase architecture: per-block VAE (Phase 1) feeding into the
-cross-block Transformer (Phase 2) to produce subject embeddings.
-*Source: architecture slide / drawn from pipeline design, filename:
-`docs/images/pipeline_overview.png`*
+cross-block Transformer (Phase 2) to produce subject embeddings (shown above).
+
 
 ---
 

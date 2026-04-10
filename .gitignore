@@ -1,12 +1,34 @@
-cat >> .gitignore <<'EOF'
-.DS_Store
+# Data and generated outputs (access-controlled or reproducible)
 results/
 data/
 geno_ld/
-__pycache__/
-*.pyc
-EOF
 
-git add .gitignore
-git commit -m "chore: add gitignore for local data and generated outputs"
-git push
+# OS / editor junk
+.DS_Store
+**/.DS_Store
+
+# Python bytecache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Archive scratch (archived .py source files remain tracked)
+scripts/archive/__pycache__/
+scripts/archive/*.pyc
+scripts/archive/tmp/
+scripts/archive/.DS_Store
+
+# Environments and packaging
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/

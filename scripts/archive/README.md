@@ -19,6 +19,12 @@ of a fresh analysis.
 | `plots.py` | Superseded — earlier version of `core/plots_updated.py`; hardcoded absolute paths to old machine layout |
 | `quick_block_plots.py` | Exploratory — earlier gradient analysis draft; internally titled `08_block_embedding_umap_analysis.py` |
 | `check.py` | Debug — prints file paths and CSV head; one-off inspection script |
+| `05_umap_hla_interpretation.py` | Merged — Step B of `analysis/02_subject_cluster_analysis.py` |
+| `09_unsupervised_subject_cluster_analysis.py` | Merged — Step A of `analysis/02_subject_cluster_analysis.py` |
+| `10_hla_cluster_analysis.py` | Merged — Step C of `analysis/02_subject_cluster_analysis.py` |
+| `13_phenotype_cluster_analysis.py` | Archived — phenotype~cluster analysis; superseded by `analysis/01_` and `analysis/02_` |
+| `17q21_baseline_comparison.py` | Merged — Step B of `analysis/07_17q21_validation.py` |
+| `17q21_genotype_embedding_validation.py` | Merged — Step A of `analysis/07_17q21_validation.py` |
 
 ## Import note
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-11_leave_hla_out.py
+03_leave_hla_out_analysis.py
 
 Leave-HLA-out validation.
 

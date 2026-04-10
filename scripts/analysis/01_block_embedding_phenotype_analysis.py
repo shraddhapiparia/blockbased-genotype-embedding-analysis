@@ -19,7 +19,7 @@ Ancestry analysis
 
 Phenotype analysis
 ------------------
-Continuous : BMI, age, G19B, log10eos, pctpred_fev1_pre_BD
+Continuous : BMI, age, G19B, log10eos, log10Ige, pctpred_fev1_pre_BD
 Categorical: Hospitalized_Asthma_Last_Yr, smkexp_current  (1=no → 0, 2=yes → 1)
              G20D (binarised: 0 = none, >0 = any)
 
@@ -83,7 +83,7 @@ CONTROL_FOCUS_PATTERNS = ["PDE4D", "NOD2", "CFTR"]
 # FOCUS_PATTERNS = ["HLA", "17q21", "IL1RL1", "IL33", "FCER1A", "5q31_type2"]
 FOCUS_PATTERNS = []
 
-CONTINUOUS_PHENOS = ["G19B", "log10eos", "pctpred_fev1_pre_BD"]
+CONTINUOUS_PHENOS = ["G19B", "log10eos", "log10Ige", "pctpred_fev1_pre_BD"]
 CATEGORICAL_PHENOS = ["G20D"]
 ALL_PHENOS = CONTINUOUS_PHENOS + CATEGORICAL_PHENOS
 
@@ -146,6 +146,9 @@ def get_covars(pheno, available_cols):
         covars += ["gender_num"]
 
     elif pheno == "log10eos":
+        covars += ["age", "gender_num"]
+
+    elif pheno == "log10Ige":
         covars += ["age", "gender_num"]
 
     elif pheno == "pctpred_fev1_pre_BD":

@@ -1,0 +1,12 @@
+cat >> .gitignore <<'EOF'
+.DS_Store
+results/
+data/
+geno_ld/
+__pycache__/
+*.pyc
+EOF
+
+git add .gitignore
+git commit -m "chore: add gitignore for local data and generated outputs"
+git push

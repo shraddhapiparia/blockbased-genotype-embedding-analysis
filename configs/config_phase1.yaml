@@ -1,0 +1,41 @@
+data:
+  raw_dir: "data/region_blocks"
+  block_def: "data/block_plan/manifest.tsv"
+  output_dir: "results/output_regions"
+runtime:
+  device: "cpu"
+vae:
+  latent_dim: 8
+  latent_dim_by_snps:
+    - [8, 49, 4]
+    - [50, 149, 8]
+    - [150, 299, 12]
+    - [300, 799, 16]
+    - [800, 1000000000, 16]
+  dropout: 0.3
+  lr: 0.001
+  batch_size: 64
+  epochs: 200
+  beta_max: 0.5
+  beta_warmup: 50
+  patience: 20
+  grad_clip: 1.0
+  val_frac: 0.2
+  seed: 42
+  cat_weight_clip: 10.0
+loss_functions: ["MSE","ORD","MSE_STD","CAT","BCE"]
+# loss_functions: ["ORD"]
+tuning:
+  enabled: true
+  loss: "ORD"  # loss function to tune on
+  metric: "bal_acc_va"  # or "best_val_loss", "ld_corr_va"
+  blocks: ["region_17q21_core_sb1", "region_11q13_FCER1A","region_2q12_IL1RL1_cluster_sb3","region_5q21_PDE4D_sb55", "region_6p21_HLA_classII_sb1","region_5q31_type2_cytokine_sb9", "region_1q31_TNFSF_cluster_sb4", "control_OCA2_sb10"]  # list of block_ids to tune on, empty means all
+  params:
+    dropout: [0.1, 0.3, 0.5]
+    lr: [0.0005, 0.001, 0.002]
+    beta_max: [0.3, 0.5]
+representative:
+  blocks: ["region_17q21_core_sb1", "region_11q13_FCER1A","region_2q12_IL1RL1_cluster_sb3","region_5q21_PDE4D_sb55", "region_6p21_HLA_classII_sb1","region_5q31_type2_cytokine_sb9", "region_1q31_TNFSF_cluster_sb4", "control_OCA2_sb10"]  # list of block_ids to tune on, empty means all
+  metric: "bal_acc_va"  # metric for top/bottom selection
+  top_k: 2
+  bottom_k: 2

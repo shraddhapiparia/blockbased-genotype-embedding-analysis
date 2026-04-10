@@ -1,0 +1,28 @@
+phase1_dir: results/output_regions
+output_dir: results/output_regions2_noHLA
+attention:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  d_ff: 128
+  dropout: 0.1
+  lr: 0.0005
+  weight_decay: 0.0001
+  batch_size: 64
+  epochs: 300
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  extract_self_attn: true
+  save_full_self_attn: false
+  device: cpu
+clustering:
+  k_range: [2, 3, 4, 5, 6, 8, 10]
+  use_hdbscan: true
+  hdbscan_min_size: 10
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  umap_seed: 42
+loss_functions: [ORD]
+# leave-HLA-out flag — new addition
+exclude_blocks_containing: ["HLA_classII"]

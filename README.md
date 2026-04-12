@@ -46,13 +46,13 @@ The result is an embedding that is biologically interpretable (attention scores)
 
 ---
 
-## Recommended Figures
+## Figures
 
 ### 1 — Pipeline architecture
 
 
 Schematic of the two-phase architecture: per-block VAE (Phase 1) feeding into the
-cross-block Transformer (Phase 2) to produce subject embeddings (shown above).
+cross-block Transformer (Phase 2) to produce subject embeddings is shown above.
 
 
 ---

@@ -21,9 +21,7 @@ losing local genomic context. This project takes a hierarchical approach:
    into a single subject-level representation. Learned attention weights identify which
    blocks are most informative for organizing genetic variation across individuals.
 
-The result is an embedding that is biologically interpretable (block-level attribution),
-ancestrally aware (genotype PC adjustment), and structured for downstream analysis
-(clustering, phenotype association, leave-one-block-out validation).
+The result is an embedding that is biologically interpretable (attention scores), within same ancestry, and structured for downstream analysis (clustering, phenotype association, leave-one-block-out validation).
 
 ---
 

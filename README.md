@@ -38,7 +38,7 @@ The result is an embedding that is biologically interpretable (attention scores)
   informative block — consistent with its established role in asthma and β-agonist
   pharmacogenomics.
 - **Phenotype signal is real but subtle; IgE is the strongest.** Continuous phenotypes
-  (log10 blood eosinophil count, IgE proxy G19B) show the most consistent association
+  (blood eosinophil count, IgE, lung function spirometry test, exacerbation) show the most consistent association
   with block-level PC features across subjects.
 - **Biology recovered without phenotype labels.** The model was trained unsupervised on
   genotype data only. The emergence of HLA class II and PDE4D in post-hoc analysis

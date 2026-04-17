@@ -1,8 +1,17 @@
 # Data and generated outputs (access-controlled or reproducible)
 results/
-data/
+data/*
 geno_ld/
 metadata/
+
+# Un-ignore the synthetic smoke-test generator (script only, not generated files).
+# data/* is used (not data/) so git can traverse into data/synthetic/ for exceptions.
+data/
+!data/synthetic/
+data/synthetic/region_blocks/
+data/synthetic/block_plan/
+data/synthetic/*
+!data/synthetic/create_synthetic_data.py
 
 # OS / editor junk
 .DS_Store

@@ -34,7 +34,7 @@ The result is an embedding that is biologically interpretable (attention scores)
   cluster structure beyond what genotype PC1–10 can account for, confirming genuine
   biological signal rather than ancestry confounding.
 - **PDE4D emerges after masking HLA.** A leave-HLA-out re-clustering experiment
-  (script `11_leave_hla_out.py`) reveals PDE4D as the next most structurally
+  (script `03_leave_hla_out_analysis.py`) reveals PDE4D as the next most structurally
   informative block — consistent with its established role in asthma and β-agonist
   pharmacogenomics.
 - **Phenotype signal is real but subtle; IgE is the strongest.** Continuous phenotypes
@@ -43,6 +43,20 @@ The result is an embedding that is biologically interpretable (attention scores)
 - **Biology recovered without phenotype labels.** The model was trained unsupervised on
   genotype data only. The emergence of HLA class II and PDE4D in post-hoc analysis
   validates that the learned geometry reflects known asthma biology.
+
+---
+
+## What Phase 2 Adds Beyond PCA
+
+Conventional PCA on raw genotype data primarily captures population structure — the top
+components reflect ancestry rather than disease-relevant biology. Phase 1 VAE embeddings
+preserve local LD-block haplotype structure that SNP-level PCA discards. Phase 2 adds
+cross-block context: the Transformer learns which blocks co-vary meaningfully across
+subjects, reorganizing rather than destroying the Phase 1 geometry (Phase 1 vs Phase 2
+pairwise-distance correlation ≈ 0.68). The result is a subject-level space where HLA
+class II dominates the primary axis, PDE4D emerges as the next structurally informative
+block after HLA removal, and IgE shows stronger phenotype association — biological signal
+that ancestry-adjusted PCA does not recover.
 
 ---
 
@@ -66,7 +80,7 @@ PCA of Phase 2 subject embeddings reveals three reproducible strata (`k=3`; ARI 
 The weak silhouette score (`0.139`) indicates the learned space is structured as a
 continuous gradient rather than sharply separated clinical subtypes.
 
-*Source: `scripts/analysis/09_unsupervised_subject_cluster_analysis.py`. 
+*Source: `scripts/analysis/02_subject_cluster_analysis.py`.
 Filename: `docs/images/subject_pca_clusters.png`*
 
 ---
@@ -78,8 +92,7 @@ Filename: `docs/images/subject_pca_clusters.png`*
 HLA class II subblocks strongly organize the Phase 2 embedding space. HLA sb15 explains
 far more cluster variance than ancestry PCs (η² = 0.767 vs 0.051 for genotype PC3) and
 correlates strongly with the main embedding axis (EmbedPC1 r = −0.88).
-*Source: `scripts/analysis/10_hla_cluster_analysis.py` and
-`scripts/analysis/09_unsupervised_subject_cluster_analysis.py`. 
+*Source: `scripts/analysis/02_subject_cluster_analysis.py`.*
 
 ---
 
@@ -100,15 +113,18 @@ biologically coherent without supervised training.
 ```
 scripts/
   core/       Core pipeline — Phase 1 VAE, Phase 2 Transformer, block analysis, plotting
-  analysis/   Post-hoc interpretation, validation, and figure generation
+  analysis/   Numbered post-hoc scripts (01–07): phenotype association, clustering,
+              HLA validation, confounder analysis, 17q21 validation
   archive/    Superseded wrappers, exploratory one-offs, debug scripts
-configs/      YAML configs for Phase 1 and Phase 2
-data/         Genotype block files and block manifest (not version-controlled if restricted)
-results/      Pipeline outputs (embeddings, clustering, association tables, figures)
-docs/         Notes, method descriptions, and figures for README
-metadata/     Phenotype table, eigenvec file, subject lists
+configs/      YAML configs for Phase 1, Phase 2, and no-HLA variant
+data/         Genotype block files and block manifest (access-restricted, not tracked)
+results/      Pipeline outputs (access-restricted, not tracked)
+metadata/     Phenotype table, eigenvec file (access-restricted, not tracked)
+docs/         Method notes and figures
 environment.yml
 WORKFLOW.md   Step-by-step execution guide with CLI examples
+run_pipeline.sh  Single entry point — runs full pipeline or --dry-run input check
+CLAUDE.md     AI assistance constraints and workflow summary
 ```
 
 See [WORKFLOW.md](WORKFLOW.md) for full CLI instructions, expected inputs/outputs per
@@ -122,18 +138,22 @@ step, and execution order.
 conda env create -f environment.yml
 conda activate genotype-embedding-env
 
-# Phase 1 — per-block VAE
-python scripts/core/VAE_phase1.py --config configs/config_phase1.yaml
+# Run full pipeline (requires restricted data in data/ and metadata/)
+./run_pipeline.sh
 
-# Phase 2 — cross-block attention
+# Validate inputs only — no training
+./run_pipeline.sh --dry-run
+
+# Or run phases individually
+python scripts/core/VAE_phase1.py --config configs/config_phase1.yaml
 python scripts/core/attention_phase2.py --config configs/config_phase2.yaml
 
 # Post-hoc analysis (example)
-python scripts/analysis/11_leave_hla_out.py
+python scripts/analysis/03_leave_hla_out_analysis.py
 ```
 
-Use `--dry-run` on either Phase 1 or Phase 2 to validate inputs without running training.
-Full details in [WORKFLOW.md](WORKFLOW.md).
+Use `--dry-run` on `run_pipeline.sh` or on either phase script to validate inputs without
+running training. Full details in [WORKFLOW.md](WORKFLOW.md).
 
 ---
 

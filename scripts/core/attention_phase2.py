@@ -759,7 +759,7 @@ def plot_attention_summary(pool_attn, block_meta, loss_type, out):
 
     # (b) box plot
     ax = axes[1]
-    ax.boxplot(pool_attn, vert=False, labels=bnames)
+    ax.boxplot(pool_attn, vert=False, tick_labels=bnames)
     ax.set_xlabel("Pooling attention weight")
     ax.set_title("Distribution per block")
 

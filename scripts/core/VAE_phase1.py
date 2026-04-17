@@ -1024,7 +1024,7 @@ def plot_aggregate_boxes(sdf, out_dir):
     for met in metrics:
         fig, ax = plt.subplots(figsize=(10,6))
         data = [sdf[sdf["loss"] == loss][met].dropna() for loss in sdf["loss"].unique()]
-        ax.boxplot(data, labels=sdf["loss"].unique())
+        ax.boxplot(data, tick_labels=sdf["loss"].unique())
         ax.set_title(f'Distribution of {met} across Losses')
         ax.set_ylabel(met)
         plt.tight_layout()

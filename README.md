@@ -157,6 +157,24 @@ running training. Full details in [WORKFLOW.md](WORKFLOW.md).
 
 ---
 
+## Synthetic Smoke Test
+
+To verify the Phase 1 → Phase 2 pipeline wiring without restricted data access:
+
+```bash
+./test_run.sh
+```
+
+Expected runtime: under 5 minutes on CPU. The script generates 30 fake subjects across
+4 synthetic LD blocks (10 SNPs each, random integers in {0, 1, 2}), runs Phase 1 and
+Phase 2 with minimal settings (3 epochs), and confirms that required output files are
+written to `results/synthetic_test/` and `results/synthetic_test2/`.
+
+> These outputs validate pipeline wiring only. Synthetic data has no biological meaning
+> and should not be interpreted scientifically.
+
+---
+
 ## Data
 
 Raw genotype data and phenotype tables are not version-controlled (access-restricted).

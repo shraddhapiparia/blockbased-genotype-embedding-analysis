@@ -2,6 +2,7 @@
 results/
 data/
 geno_ld/
+metadata/
 
 # OS / editor junk
 .DS_Store

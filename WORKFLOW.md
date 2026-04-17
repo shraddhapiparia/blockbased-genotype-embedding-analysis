@@ -74,21 +74,17 @@ They do not require rerunning the full training pipeline.
 ## Active analysis scripts
 
 Run after Phase 2 to produce interpretation, validation, and figures.
-Intended execution order follows the numbering where present.
+Scripts are numbered in intended execution order.
 
 | Script | Purpose | Key outputs |
 |---|---|---|
-| `05_umap_hla_interpretation.py` | UMAP embedding + HLA cluster interpretation | UMAP plots, cluster labels |
-| `06_attention_confounder_analysis.py` | OLS: attention ~ asthma + PC1–10 | Confounder tables, heatmaps |
-| `07_block_embedding_phenotype_analysis.py` | Block-level PC1 phenotype associations | `phenotype_block_associations.tsv` |
-| `09_unsupervised_subject_cluster_analysis.py` | UMAP + HDBSCAN subject clustering | Cluster assignments, plots |
-| `10_hla_cluster_analysis.py` | HLA block_PC1 by cluster; tests ancestry confounding | HLA cluster summary |
-| `11_leave_hla_out.py` | Leave-HLA-out anti-circularity validation | Re-clustered subject assignments |
-| `12_cluster_stability.py` | KMeans seed / algorithm / k stability | ARI tables, elbow plots |
-| `13_phenotype_cluster_analysis.py` | Phenotype ~ cluster + embedding PCs | Phenotype analysis tables |
-| `17q21_genotype_embedding_validation.py` | 17q21 subblock validation (4 figures + correlation tables) | fig1–fig4 PNGs, SNP correlation TSVs |
-| `17q21_baseline_comparison.py` | Embedding PC vs raw genotype PC at 17q21 | Incremental R² comparison |
-| `compare_phase1_phase2_blocks.py` | PDM correlation + phenotype association Phase 1 vs Phase 2 | `pdm_correlations.csv`, comparison plots |
+| `01_block_embedding_phenotype_analysis.py` | Phenotype and ancestry association of block-level contextual representations (`block_contextual_repr.npy`) | `phenotype_block_associations.tsv` |
+| `02_subject_cluster_analysis.py` | Three-stage subject analysis: (A) HDBSCAN clustering + PCA/UMAP; (B) UMAP coloured by attention weights, top-block identification; (C) KMeans(k=3) + HLA block_PC1 vs genotype-PC per cluster | Cluster assignments, UMAP plots, HLA cluster summary |
+| `03_leave_hla_out_analysis.py` | Leave-HLA-out anti-circularity validation; re-clusters on Phase 1 embeddings with HLA blocks masked | Re-clustered subject assignments |
+| `04_cluster_stability_analysis.py` | KMeans seed / algorithm / k stability | ARI tables, elbow plots |
+| `05_attention_confounder_analysis.py` | OLS: attention ~ asthma; attention ~ asthma + PC1–10; Pearson r with each PC | Confounder tables, heatmaps |
+| `06_phase1_phase2_block_comparison.py` | Pairwise-distance-matrix (PDM) Spearman correlation and phenotype association comparing Phase 1 and Phase 2 block representations | `pdm_correlations.csv`, comparison plots |
+| `07_17q21_validation.py` | Two-stage 17q21 validation: (A) genotype↔embedding alignment, SNP-level correlations, 4 publication figures; (B) OLS baseline comparison — embedding PC vs raw genotype PC ~ FEV1, incremental R² | fig1–fig4 PNGs, SNP correlation TSVs |
 
 ---
 

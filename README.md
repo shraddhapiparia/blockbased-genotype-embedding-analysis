@@ -90,7 +90,7 @@ Filename: `docs/images/subject_pca_clusters.png`*
 ![HLA class II dominates the learned embedding space](docs/images/hla_embedding_dominance.png)
 
 HLA class II subblocks strongly organize the Phase 2 embedding space. HLA sb15 explains
-far more cluster variance than ancestry PCs (η² = 0.767 vs 0.051 for genotype PC3) and
+far more cluster variance than ancestry PCs (η² = 0.767 vs 0.051 for genotype PC1) and
 correlates strongly with the main embedding axis (EmbedPC1 r = −0.88).
 *Source: `scripts/analysis/02_subject_cluster_analysis.py`.*
 

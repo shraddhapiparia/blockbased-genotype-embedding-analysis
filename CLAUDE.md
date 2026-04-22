@@ -1,46 +1,125 @@
-# CLAUDE.md
+# CLAUDE.md — Block-Based Genotype Embedding Project
 
-## Repository Purpose
+## Goal
+Ensure reliable development and analysis of LD block-based genotype embeddings
+using VAE (Phase 1) and transformer (Phase 2) pipelines.
 
-Block-based genotype embedding analysis for asthma-relevant genomic loci.
-Phase 1 trains a per-block β-VAE on LD-block genotype data. Phase 2 aggregates block
-embeddings via a cross-block Transformer to produce subject-level representations.
-Downstream analysis covers clustering, phenotype association, and block interpretation.
+---
 
-## Restricted Data
+## Core Rules
 
-Raw genotype and phenotype inputs are access-restricted and not version-controlled.
-`data/`, `metadata/`, and `results/` are all gitignored. Do not commit files from those
-directories. Never hardcode subject identifiers, phenotype values, or file paths that
-expose cohort structure.
+- Do not hallucinate schema → verify before writing SQL or joins
+- Do not assume files exist → check paths and outputs
+- Do not claim results without execution or validation
+- If something can be verified by running code, prefer execution over reasoning
+- Do not fake domain expertise → state limits and suggest validation methods
+- Push back on incorrect assumptions instead of building on them
+- State uncertainty explicitly when unsure
+- Verify API syntax against correct library versions (do not rely on memory)
+- Update `.memory/` after every successful pipeline run
+- Avoid em dashes; use simple and clear sentence structures
 
-## Workflow Order
+---
 
-```
-Phase 1  →  Phase 2  →  Core supporting scripts  →  Analysis scripts (01–07)
-```
+## Pipeline Overview
 
-Full CLI details are in [WORKFLOW.md](WORKFLOW.md). A convenience wrapper is in
-[run_pipeline.sh](run_pipeline.sh). Use `--dry-run` on Phase 1 or Phase 2 to validate
-inputs without running training.
+Phase 1:
+- Input: genotype data (LD blocks)
+- Output: block-level embeddings
 
-## Constraints for AI Assistance
+Phase 2:
+- Input: Phase 1 embeddings
+- Output:
+  - subject embeddings (N × 64)
+  - contextual block embeddings (N × B × 64)
+  - attention weights
 
-- **Do not modify scientific logic, model architecture, loss functions, or hyperparameters
-  unless explicitly asked.** This includes `scripts/core/` and `scripts/analysis/`.
-- **Do not change configs** (`configs/`) unless explicitly asked.
-- **Do not delete or overwrite anything in `results/`**; new experiment outputs belong in
-  a separate subdirectory (e.g., `results/experimental/`).
-- Prefer editing existing files over creating new ones.
-- Keep changes minimal and scoped to the task at hand.
-- If a task touches scientific decisions, stop and ask before proceeding.
+Analysis:
+- clustering (KMeans, PCA)
+- block-PC1 associations
+- phenotype associations
+- HLA masking experiments
 
-## Environment
+---
 
-```bash
-conda env create -f environment.yml
-conda activate genotype-embedding-env
-```
+## Active Code Structure
 
-Python 3.10. Key dependencies: `torch`, `numpy`, `pandas`, `scikit-learn`, `scipy`,
-`statsmodels`, `seaborn`, `matplotlib`, `umap-learn`, `hdbscan`, `requests`.
+- `scripts/core/VAE_phase1.py` → block embedding model
+- `scripts/core/attention_phase2.py` → transformer aggregation
+- `scripts/analysis/` → all downstream analysis
+- `scripts/archive/` → legacy (ignore)
+- `configs/` → model + pipeline configs
+
+Never use archive scripts for new analysis.
+
+---
+
+## Key Scientific Constraints
+
+- HLA region dominates embedding structure
+- Multiple independent HLA sub-block directions exist
+- PDE4D emerges as secondary axis after HLA masking
+- Phenotype signal is weak but enriched in asthma-related regions
+
+Claude must:
+- avoid over-interpreting weak signals
+- separate biological signal vs technical artifact
+- always check if HLA is driving results
+
+---
+
+## Common Failure Modes
+
+- Incorrect joins between embeddings and phenotype
+- Confusion between genotype PC and embedding PC
+- Silent row drops during merges
+- Using wrong phenotype encoding
+- Treating exploratory results as final
+
+---
+
+## Validation Checklist
+
+For every analysis:
+
+- Are subject counts consistent across steps?
+- Do embeddings align with block order?
+- Are correlations computed correctly (Pearson vs Spearman)?
+- Are covariates applied where required?
+- Do known signals (HLA) behave as expected?
+- Are results reproducible?
+
+---
+
+## Memory System
+
+Maintain `.memory/` with:
+
+- failed experiments (e.g., leakage in PLS gradients)
+- fixes (e.g., cross_val_predict)
+- key insights (e.g., HLA dominance, PDM corr = 0.68)
+
+---
+
+## Example Prompts
+
+Design:
+"Given Phase 1 and Phase 2 pipeline, list all assumptions that could break biological interpretation."
+
+Analysis:
+"Compare Phase 1 vs Phase 2 embeddings. What metrics are valid given different dimensions?"
+
+Debugging:
+"Cluster separation looks too strong. Could this be driven by HLA? How to test?"
+
+---
+
+## Final Principle
+
+The model is useful only if:
+- it recovers known biology (HLA, PDE4D)
+- results are reproducible
+- interpretations are cautious and verified
+
+Do not optimize for impressive results.
+Optimize for correct results.

@@ -73,7 +73,7 @@ biological signal that ancestry-adjusted PCA does not recover.
 
 ## Figures
 
-### 1 — Pipeline architecture
+### 1. Pipeline architecture
 
 
 Schematic of the two-phase architecture: per-block VAE (Phase 1) feeding into the
@@ -83,7 +83,7 @@ cross-block Transformer (Phase 2) to produce subject embeddings is shown above.
 ---
 
 
-### 2 — Subject embedding PCA reveals stable genomic structure
+### 2. Subject embedding PCA reveals stable genomic structure
 
 ![Subject PCA colored by cluster](docs/images/subject_pca_clusters.png)
 
@@ -100,7 +100,7 @@ Filename: `docs/images/subject_pca_clusters.png`*
 
 ---
 
-### 3 — HLA class II dominance
+### 3. HLA class II dominance
 
 ![HLA class II dominates the learned embedding space](docs/images/hla_embedding_dominance.png)
 
@@ -115,7 +115,7 @@ tracked in a dedicated output table.
 
 ---
 
-### 4 — Three-finding summary
+### 4. Three-finding summary
 
 ![Summary of main findings](docs/images/findings_summary.png)
 
@@ -130,7 +130,7 @@ biologically coherent without supervised training.
 ## Limitations
 
 - **Internal validation only.** All results are from a single cohort (COS/TRIO).
-  Clustering structure, attention rankings, and phenotype associations have not been
+  Clustering structure, attention rankings, and phenotype associations are yet to be
   validated in an independent dataset.
 - **No causal inference.** Attention weights and LOBO/perturbation attribution scores
   identify blocks that are statistically influential for the learned embedding geometry.
@@ -176,7 +176,6 @@ pytest.ini
 WORKFLOW.md   Step-by-step execution guide with CLI examples
 run_pipeline.sh  Single entry point — runs full pipeline or --dry-run input check
 test_run.sh   Smoke test — Phase 1 → Phase 2 on synthetic data (no restricted data needed)
-CLAUDE.md     AI assistance constraints and workflow summary
 ```
 
 See [WORKFLOW.md](WORKFLOW.md) for full CLI instructions, expected inputs/outputs per

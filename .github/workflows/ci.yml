@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          micromamba-version: latest
+          environment-file: environment.yml
+          init-shell: bash
+          cache-environment: true
+          create-args: cpuonly   # CPU-only PyTorch; avoids large CUDA download on runners
+
+      - name: Smoke test — Phase 1 → Phase 2 on synthetic data
+        run: bash test_run.sh
+
+      - name: Unit tests
+        run: pytest -q

@@ -88,6 +88,34 @@ Scripts are numbered in intended execution order.
 
 ---
 
+## Attribution scripts (08–10)
+
+Run after Phase 2 and the core analysis scripts. Scripts 08–10 form a
+hierarchical attribution pipeline: embedding alignment → block attribution →
+SNP attribution.
+
+| Script | Purpose | Key inputs | Key outputs |
+|---|---|---|---|
+| `08_clinical_pc_embedding_alignment.py` | Align learned Phase 2 embedding PCs with clinical phenotype PCs; Pearson + Spearman heatmaps; OLS and Ridge baselines including ancestry-PC-only model | Phase 2 `individual_embeddings.csv`, `ldpruned_997subs.eigenvec`, phenotype CSV | `correlation_heatmap_pearson.png`, `correlation_heatmap_spearman.png`, `embedding_pc_correlations.tsv`, R² comparison tables |
+| `09_phase2_block_attribution.py` | Leave-one-block-out (LOBO) attribution: for each of the 174 Phase 1 blocks, mean-mask it in the Phase 2 input and measure change in embedding PC1/PC2 and IgE ridge score | Phase 1 `all_blocks.npy`, Phase 2 checkpoint + `individual_embeddings.npy`, `block_order.csv`, `subjects.csv` | `phase2_PC1_leave_one_block_out.csv`, `phase2_PC2_leave_one_block_out.csv`, `phase2_log10Ige_leave_one_block_out.csv`, top-20 bar plots |
+| `10_phase1_snp_attribution_within_blocks.py` | For user-selected blocks from script 09: mean-mask each SNP in the Phase 1 input, re-encode through the frozen VAE, re-run Phase 2, project onto fixed PCA axes, and rank SNPs by mean absolute delta | Phase 1 block checkpoints (`.pt`), per-block `.raw` genotype files, Phase 2 checkpoint + embeddings, script 09 LOBO CSVs (optional, enables block-weighted priority) | Per-block and combined `*_snp_attribution.csv`, bar plots |
+
+```bash
+# Run 08 (requires Phase 2 outputs at default paths)
+python scripts/analysis/08_clinical_pc_embedding_alignment.py
+
+# Run 09
+python scripts/analysis/09_phase2_block_attribution.py
+
+# Run 10 (requires --selected-blocks from 09 results)
+python scripts/analysis/10_phase1_snp_attribution_within_blocks.py \
+    --selected-blocks region_9p24_IL33,region_6p21_HLA_classII_sb15 \
+    --lobo-pc1-csv results/analysis/phase2_block_attribution/phase2_PC1_leave_one_block_out.csv \
+    --lobo-pc2-csv results/analysis/phase2_block_attribution/phase2_PC2_leave_one_block_out.csv
+```
+
+---
+
 ## Archive
 
 `scripts/archive/` contains scripts that are **not part of the active workflow**:

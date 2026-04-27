@@ -56,8 +56,8 @@ for f in \
   "$P1_OUT/vae_summary.csv" \
   "$P1_OUT/MSE/embeddings/all_blocks.npy" \
   "$P2_OUT/phase2_summary.csv" \
-  "$P2_OUT/MSE/embeddings/individual_embeddings.npy" \
-  "$P2_OUT/MSE/embeddings/pooling_attention_weights.csv"
+  "$P2_OUT/ORD/embeddings/individual_embeddings.npy" \
+  "$P2_OUT/ORD/embeddings/pooling_attention_weights.csv"
 do
   if [[ ! -f "$f" ]]; then
     echo "ERROR: expected output missing: $f" >&2

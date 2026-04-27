@@ -16,6 +16,10 @@ import pandas as pd
 from pathlib import Path
 from itertools import combinations
 
+# ── reproducibility metadata helper (same directory) ──────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from run_metadata import write_run_metadata as _write_run_metadata
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -969,7 +973,8 @@ def _plot_attention_comparison(all_res, out_dir):
 # ============================================================
 # 9. MAIN PHASE-2 PIPELINE
 # ============================================================
-def run_phase2(cfg):
+def run_phase2(cfg, *, config_path=None):
+    t0_run = time.time()
     ac = cfg["attention"]
     cc = cfg["clustering"]
 
@@ -1174,6 +1179,14 @@ def run_phase2(cfg):
         print(f"\n  Cross-loss comparison ({len(cdf)} rows):")
         print(cdf.to_string(index=False))
 
+    _write_run_metadata(
+        out,
+        config_path=config_path or out / "config_phase2.yaml",
+        cfg=cfg,
+        t0=t0_run,
+        t1=time.time(),
+    )
+
     return all_results
 
 
@@ -1231,7 +1244,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     t0 = time.time()
-    run_phase2(cfg)
+    run_phase2(cfg, config_path=config_path)
 
     # Post-run output validation
     expected = [out_dir / "phase2_summary.csv"]

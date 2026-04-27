@@ -24,6 +24,10 @@ import sklearn
 from itertools import product
 from torch.utils.data import TensorDataset, DataLoader
 from pathlib import Path
+
+# ── reproducibility metadata helper (same directory) ──────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from run_metadata import write_run_metadata as _write_run_metadata
 try:
     import matplotlib.pyplot as plt
     HAS_PLT = True
@@ -1049,7 +1053,8 @@ def plot_scatter_metric_vs(sdf, x_col, out_dir):
         plt.close()
 
 
-def run_phase1(cfg):
+def run_phase1(cfg, *, config_path=None):
+    t0_run = time.time()
     vc  = cfg["vae"]
     set_seed(vc["seed"])
     # dev = get_device()
@@ -1068,28 +1073,6 @@ def run_phase1(cfg):
         vc["beta_max"] = float(best.get("beta_max", vc["beta_max"]))
         print(f"[tuning] loaded best params from {best_params_path}: "
             f"dropout={vc['dropout']}, lr={vc['lr']}, beta_max={vc['beta_max']}")
-
-    meta = {
-        "python": sys.version,
-        "platform": platform.platform(),
-        "hostname": socket.gethostname(),
-        "cwd": os.getcwd(),
-        "torch": torch.__version__,
-        "numpy": np.__version__,
-        "pandas": pd.__version__,
-        "sklearn": sklearn.__version__,
-        "device": str(dev),
-        "mps_available": bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available()),
-        "cuda_available": torch.cuda.is_available(),
-        "seed": vc["seed"],
-        "deterministic_algorithms_requested": True,
-        "raw_dir": cfg["data"]["raw_dir"],
-        "block_def": cfg["data"]["block_def"],
-        "output_dir": cfg["data"]["output_dir"],
-        "config_path": args.config if 'args' in locals() else "default",
-    }
-    with open(out / "run_metadata.json", "w") as f:
-        json.dump(meta, f, indent=2)
 
     # persist config used
     with open(out / "config_phase1.yaml", "w") as f:
@@ -1288,6 +1271,14 @@ def run_phase1(cfg):
         # Cross-loss metrics
         plot_cross_loss_metrics(sdf, bid, rep_dir)
 
+    _write_run_metadata(
+        out,
+        config_path=config_path or out / "config_phase1.yaml",
+        cfg=cfg,
+        t0=t0_run,
+        t1=time.time(),
+    )
+
     return sdf
 
 
@@ -1347,7 +1338,7 @@ if __name__ == "__main__":
     if args.tune:
         run_tuning(cfg)
     else:
-        run_phase1(cfg)
+        run_phase1(cfg, config_path=resolved_config)
 
     # Post-run output validation
     if args.tune:

@@ -85,7 +85,7 @@ cross-block Transformer (Phase 2) to produce subject embeddings is shown above.
 
 ### 2. Subject embedding PCA reveals stable genomic structure
 
-<img src="docs/images/subject_pca_clusters.png" width="500">
+<img src="docs/images/subject_pca_clusters.png" width="300">
 
 PCA of Phase 2 subject embeddings reveals three reproducible strata (`k=3`; mean
 pairwise ARI = 0.999 across 50 random seeds). The weak silhouette score (`0.139`)

@@ -85,7 +85,7 @@ cross-block Transformer (Phase 2) to produce subject embeddings is shown above.
 
 ### 2. Subject embedding PCA reveals stable genomic structure
 
-![Subject PCA colored by cluster](docs/images/subject_pca_clusters.png)
+<img src="docs/images/subject_pca_clusters.png" width="500">
 
 PCA of Phase 2 subject embeddings reveals three reproducible strata (`k=3`; mean
 pairwise ARI = 0.999 across 50 random seeds). The weak silhouette score (`0.139`)
@@ -102,7 +102,7 @@ Filename: `docs/images/subject_pca_clusters.png`*
 
 ### 3. HLA class II dominance
 
-![HLA class II dominates the learned embedding space](docs/images/hla_embedding_dominance.png)
+<img src="docs/images/hla_embedding_dominance.png" width="500">
 
 HLA class II subblocks strongly organize the Phase 2 embedding space. HLA sb15 explains
 far more cluster variance than ancestry PCs (η² = 0.767 vs 0.051 for genotype PC1;
@@ -117,7 +117,7 @@ tracked in a dedicated output table.
 
 ### 4. Three-finding summary
 
-![Summary of main findings](docs/images/findings_summary.png)
+<img src="docs/images/findings_summary.png" width="500">
 
 Slide-style summary panel: (1) HLA class II anchors the embedding space, (2) PDE4D
 is the next signal after HLA removal, (3) phenotype associations are present and

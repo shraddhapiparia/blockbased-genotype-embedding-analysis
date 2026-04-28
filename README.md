@@ -6,7 +6,8 @@ Status: ongoing research. README reflects current findings; documentation, CI, a
 
 Unsupervised learning of subject-level genomic representations from LD-aware blocks,
 with application to asthma-relevant loci and downstream phenotype association.
-<img src="docs/images/pipeline_overview.png" width="600">
+<img src="docs/images/pipeline_overview.png" width="500">
+
 *Phase 1 learns a compact β-VAE embedding per LD block. Phase 2 aggregates block
 embeddings across the genome via a Transformer with cross-block attention, producing
 subject-level embeddings and interpretable block-importance weights.*

@@ -152,6 +152,14 @@ biologically coherent without supervised training.
 
 ---
 
+## Upcoming Work
+
+This repository now includes block-level and SNP-level attribution analyses. The next step is to map high-attribution blocks and variants to candidate genes, then annotate those genes using public eQTL, pQTL, disease-association, pathway, druggability, and cell-type expression evidence.
+
+The goal is multiomics-informed interpretation of genotype embeddings and attribution-ranked regions, not causal target discovery.
+
+---
+
 ## Repository Structure
 
 ```

@@ -66,13 +66,13 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-EMB_SUBJ_NPY  = "results/output_regions2/ORD/embeddings/individual_embeddings.npy"
-EMB_BLOCK_NPY = "results/output_regions2/ORD/embeddings/block_contextual_repr.npy"
-ATTN_CSV      = "results/output_regions2/ORD/embeddings/pooling_attention_weights.csv"
+EMB_SUBJ_NPY  = "results/output_regions2/ORD_W_Scaled/embeddings/individual_embeddings.npy"
+EMB_BLOCK_NPY = "results/output_regions2/ORD_W_Scaled/embeddings/block_contextual_repr.npy"
+ATTN_CSV      = "results/output_regions2/ORD_W_Scaled/embeddings/pooling_attention_weights.csv"
 BLOCK_ORDER   = "results/output_regions/block_order.csv"
 EIGENVEC_FILE = "metadata/ldpruned_997subs.eigenvec"
 PHENO_FILE    = "metadata/COS_TRIO_pheno_1165.csv"
-OUT_DIR       = "results/output_regions2/ORD/all_blocks_pheno_analysis"
+OUT_DIR       = "results/output_regions2/ORD_W_Scaled/all_blocks_pheno_analysis"
 
 PC_COLS = [f"PC{i}" for i in range(1, 11)]
 

@@ -21,7 +21,7 @@ losing local genomic context. This project takes a hierarchical approach:
 
 1. **Phase 1 — Per-block β-VAE.** Each LD block is encoded independently into a
    low-dimensional latent vector that captures local haplotype structure.
-2. **Phase 2 — Cross-block Transformer.** A Transformer aggregates all block embeddings
+2. **Phase 2 — Cross-block Attention.** Phase 2 aggregates all block embeddings
    into a single subject-level representation. Learned attention weights identify which
    blocks are most informative for organizing genetic variation across individuals.
 
@@ -152,6 +152,12 @@ biologically coherent without supervised training.
 
 ---
 
+## Upcoming Work
+
+This repository now includes block-level and SNP-level attribution analyses. The next step is to map high-attribution blocks and variants to candidate genes, then annotate those genes using public eQTL, pQTL, disease-association, pathway, druggability, and cell-type expression evidence.
+
+---
+
 ## Repository Structure
 
 ```
@@ -176,7 +182,6 @@ pytest.ini
 WORKFLOW.md   Step-by-step execution guide with CLI examples
 run_pipeline.sh  Single entry point — runs full pipeline or --dry-run input check
 test_run.sh   Smoke test — Phase 1 → Phase 2 on synthetic data (no restricted data needed)
-CLAUDE.md     AI assistance constraints and workflow summary
 ```
 
 See [WORKFLOW.md](WORKFLOW.md) for full CLI instructions, expected inputs/outputs per

@@ -6,8 +6,8 @@ Status: ongoing research. README reflects current findings; documentation, CI, a
 
 Unsupervised learning of subject-level genomic representations from LD-aware blocks,
 with application to asthma-relevant loci and downstream phenotype association.
+<img src="docs/images/pipeline_overview.png" width="500">
 
-![Pipeline overview](docs/images/pipeline_overview.png)
 *Phase 1 learns a compact β-VAE embedding per LD block. Phase 2 aggregates block
 embeddings across the genome via a Transformer with cross-block attention, producing
 subject-level embeddings and interpretable block-importance weights.*
@@ -73,7 +73,7 @@ biological signal that ancestry-adjusted PCA does not recover.
 
 ## Figures
 
-### 1 — Pipeline architecture
+### 1. Pipeline architecture
 
 
 Schematic of the two-phase architecture: per-block VAE (Phase 1) feeding into the
@@ -83,9 +83,9 @@ cross-block Transformer (Phase 2) to produce subject embeddings is shown above.
 ---
 
 
-### 2 — Subject embedding PCA reveals stable genomic structure
+### 2. Subject embedding PCA reveals stable genomic structure
 
-![Subject PCA colored by cluster](docs/images/subject_pca_clusters.png)
+<img src="docs/images/subject_pca_clusters.png" width="300">
 
 PCA of Phase 2 subject embeddings reveals three reproducible strata (`k=3`; mean
 pairwise ARI = 0.999 across 50 random seeds). The weak silhouette score (`0.139`)
@@ -100,9 +100,9 @@ Filename: `docs/images/subject_pca_clusters.png`*
 
 ---
 
-### 3 — HLA class II dominance
+### 3. HLA class II dominance
 
-![HLA class II dominates the learned embedding space](docs/images/hla_embedding_dominance.png)
+<img src="docs/images/hla_embedding_dominance.png" width="500">
 
 HLA class II subblocks strongly organize the Phase 2 embedding space. HLA sb15 explains
 far more cluster variance than ancestry PCs (η² = 0.767 vs 0.051 for genotype PC1;
@@ -115,9 +115,9 @@ tracked in a dedicated output table.
 
 ---
 
-### 4 — Three-finding summary
+### 4. Three-finding summary
 
-![Summary of main findings](docs/images/findings_summary.png)
+<img src="docs/images/findings_summary.png" width="500">
 
 Slide-style summary panel: (1) HLA class II anchors the embedding space, (2) PDE4D
 is the next signal after HLA removal, (3) phenotype associations are present and
@@ -130,7 +130,7 @@ biologically coherent without supervised training.
 ## Limitations
 
 - **Internal validation only.** All results are from a single cohort (COS/TRIO).
-  Clustering structure, attention rankings, and phenotype associations have not been
+  Clustering structure, attention rankings, and phenotype associations are yet to be
   validated in an independent dataset.
 - **No causal inference.** Attention weights and LOBO/perturbation attribution scores
   identify blocks that are statistically influential for the learned embedding geometry.
@@ -155,6 +155,8 @@ biologically coherent without supervised training.
 ## Upcoming Work
 
 This repository now includes block-level and SNP-level attribution analyses. The next step is to map high-attribution blocks and variants to candidate genes, then annotate those genes using public eQTL, pQTL, disease-association, pathway, druggability, and cell-type expression evidence.
+
+The goal is multiomics-informed interpretation of genotype embeddings and attribution-ranked regions, not causal target discovery.
 
 ---
 

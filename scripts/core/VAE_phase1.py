@@ -355,7 +355,7 @@ class BlockVAE(nn.Module):
             targets = y.reshape(-1)
 
             ce = F.cross_entropy(logits, targets, reduction="mean",
-                                weight=self.ce_w) 
+                                weight=self.class_w) 
             rl = ce
         elif self.loss_type == "ORD":
             if y is None:

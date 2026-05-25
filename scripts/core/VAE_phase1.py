@@ -21,6 +21,8 @@ import json
 import platform
 import socket
 import sklearn
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 from itertools import product
 from torch.utils.data import TensorDataset, DataLoader
 from pathlib import Path
@@ -41,13 +43,8 @@ except Exception:
 DEFAULT_CFG = {
     "data": {
         "raw_dir":    "data/region_blocks",       
-        "block_def":  "data/block_plan/manifest.tsv",
-        # "block_def_ctrl":  "data/block_plan/manifest_blocks_ctrl.tsv",   
-        "output_dir": "results/output_regions",
-        # "raw_dir":    "data/region_blocks",       
-        # "block_def":  "data/block_plan_test.tsv",
-        # # "block_def_ctrl":  "data/block_plan/manifest_blocks_ctrl.tsv",   
-        # "output_dir": "results/test_ord_mps_run1",
+        "block_def":  "data/block_plan/manifest.tsv",  
+        "output_dir": "results/output_regions_ord_weighted",
     },
     "runtime": {
         "device": "cpu",
@@ -55,13 +52,12 @@ DEFAULT_CFG = {
 
     "vae": {
         "latent_dim":   8,
-        # buckets: [min_snps, max_snps, latent_dim]
         "latent_dim_by_snps": [
             [8,   49,   4],
             [50,  149,  8],
             [150, 299, 12],
             [300, 799, 16],
-            [800, 10**9, 16],
+            [800, 10_000_000, 16],
         ],
 
         "dropout":      0.30,
@@ -75,6 +71,11 @@ DEFAULT_CFG = {
         "val_frac":     0.20,
         "seed":         42,
         "cat_weight_clip": 10.0,
+        "free_bits": 0.0,         # per-dim KL floor; 0.0 = disabled (original behavior)
+        "ld_corr_repeats": 1,     # >1 averages ld_corr over multiple SNP subsamples
+        "ld_corr_max_snps": 200,  # cap on SNPs used per ld_corr evaluation
+        "ord_weighted": False,        # apply per-sample class weights to ordinal_loss
+        "ord_weight_clip": 10.0,      # same convention as cat_weight_clip
     },
     # "loss_functions": ["MSE", "BCE", "MSE_STD","CAT","ORD"],
     "loss_functions": ["MSE"],
@@ -94,7 +95,10 @@ DEFAULT_CFG = {
         "metric": "bal_acc_va",
         "top_k": 2,
         "bottom_k": 2
-    }
+    },
+    "pca": {
+        "standardize": True,  # fit StandardScaler on train PCA scores; transform all subjects
+    },
 }
 
 
@@ -124,7 +128,6 @@ def set_seed(s):
     torch.manual_seed(s)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
-
     try:
         torch.use_deterministic_algorithms(True, warn_only=True)
     except Exception:
@@ -148,20 +151,6 @@ def get_device(requested="auto"):
     print("[device] CPU")
     return torch.device("cpu")
 
-# def get_device():
-#     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-#         try:
-#             torch.zeros(2, device="mps")          # quick smoke-test
-#             print("[device] Apple MPS")
-#             return torch.device("mps")
-#         except Exception:
-#             pass
-#     if torch.cuda.is_available():
-#         print("[device] CUDA")
-#         return torch.device("cuda")
-#     print("[device] CPU")
-#     return torch.device("cpu")
-
 def latent_dim_for_p(p: int, cfg: dict) -> int:
     v = cfg.get("vae", {})
     sched = v.get("latent_dim_by_snps", None)
@@ -169,7 +158,8 @@ def latent_dim_for_p(p: int, cfg: dict) -> int:
         return int(v.get("latent_dim", 8))
 
     for lo, hi, d in sched:
-        if p >= int(lo) and p <= int(hi):
+        hi_f = float(hi)  # handles both plain ints and float("inf") from YAML
+        if p >= int(lo) and (hi_f == float("inf") or p <= hi_f):
             return int(d)
 
     return int(v.get("latent_dim", 8))
@@ -178,15 +168,10 @@ def latent_dim_for_p(p: int, cfg: dict) -> int:
 # 2.  DATA  LOADING
 # ──────────────────────────────────────────────────────────────────
 
-# Your TSV columns (has header row)
-BLOCK_COLS = [
-    "block_id", "gene", "class", "subblock", "chr",
-    "from_bp", "to_bp", "snp_count_original", "out_prefix", "status"
-]
 
 def load_block_defs(tsv: str) -> pd.DataFrame:
     df = pd.read_csv(tsv, sep="\t", header=0)
-    # keep only OK blocks
+    # keep only OK blocks from LD block formation script
     if "status" in df.columns:
         df = df[df["status"].astype(str).str.lower().eq("ok")].copy()
     print(f"[blocks] {len(df)} OK entries from {tsv}")
@@ -295,7 +280,7 @@ class BlockVAE(nn.Module):
     def __init__(self, p, d=16, drop=0.3, loss_type="MSE", class_weights=None):
         super().__init__()
         self.p, self.d, self.loss_type = p, d, loss_type
-        h = [64, 32] if p < 100 else [128, 64]
+        h = [64, 32] if p < 100 else [128, 64] # hidden layer neurons based on block size
 
         # ---- encoder ----
         layers, inp = [], p
@@ -324,9 +309,9 @@ class BlockVAE(nn.Module):
         self.dec = nn.Sequential(*layers)
 
         if class_weights is not None:
-            self.register_buffer("ce_w", torch.tensor(class_weights, dtype=torch.float32))
+            self.register_buffer("class_w", torch.tensor(class_weights, dtype=torch.float32))
         else:
-            self.ce_w = None
+            self.class_w = None
 
     def encode(self, x):
         h  = self.enc(x)
@@ -351,13 +336,14 @@ class BlockVAE(nn.Module):
         z = self.reparam(mu, lv)
         return self.decode(z), mu, lv
 
-    def compute_loss(self, x_in, recon, mu, lv, beta, y=None):
+    def compute_loss(self, x_in, recon, mu, lv, beta, y=None, free_bits=0.0):
         """
         x_in: float input to encoder, shape (B,P)
         recon:
           - CAT: logits shape (B,P,3)
           - else: shape (B,P)
-        y: required for CAT, long targets shape (B,P) with values {0,1,2}
+        y: required for CAT/ORD, long targets shape (B,P) with values {0,1,2}
+        free_bits: per-dimension KL floor; 0.0 disables (original behavior unchanged)
         """
         B = x_in.size(0)
 
@@ -368,87 +354,103 @@ class BlockVAE(nn.Module):
             logits = recon.reshape(-1, 3)
             targets = y.reshape(-1)
 
-            ce = F.cross_entropy(logits, targets, reduction="sum",
-                                weight=self.ce_w) / B
+            ce = F.cross_entropy(logits, targets, reduction="mean",
+                                weight=self.class_w) 
             rl = ce
         elif self.loss_type == "ORD":
             if y is None:
                 raise ValueError("ORD loss requires y targets (LongTensor 0/1/2).")
-            rl = ordinal_loss(recon, y)  # see corrected ordinal_loss below
+            rl = ordinal_loss(recon, y, class_weights=self.class_w)
 
         elif self.loss_type == "BCE":
-            rl = F.binary_cross_entropy_with_logits(recon, x_in, reduction="sum") / B
+            rl = F.binary_cross_entropy_with_logits(recon, x_in, reduction="mean") 
 
         else:
-            rl = F.mse_loss(recon, x_in, reduction="sum") / B
+            rl = F.mse_loss(recon, x_in, reduction="mean")
 
-        kl = -0.5 * torch.sum(1 + lv - mu.pow(2) - lv.exp()) / B
+        if free_bits > 0.0:
+            kl_dim = (-0.5 * (1 + lv - mu.pow(2) - lv.exp())).mean(dim=0)   # (d,)
+            kl = torch.clamp(kl_dim, min=free_bits).sum()
+        else:
+            kl = -0.5 * torch.mean(1 + lv - mu.pow(2) - lv.exp()) 
         return rl + beta * kl, rl, kl
 
 
 # ──────────────────────────────────────────────────────────────────
 # 4.  DATA  TRANSFORMS  (per loss type)
 # ──────────────────────────────────────────────────────────────────
-def prepare_data(geno, loss_type, tr_ix, va_ix):
+def prepare_data(geno, loss_type, tr_ix, va_ix, te_ix=None):
     tr, va = geno[tr_ix].copy(), geno[va_ix].copy()
+    te = geno[te_ix].copy() if te_ix is not None and len(te_ix) > 0 else None
     stats = {}
     if loss_type == "CAT":  # categorical
-        # tr/va are expected to be {0,1,2} ints (or floats that are exactly 0/1/2)
-        tr_x = torch.tensor(tr, dtype=torch.float32)   # encoder input
+        # encoder inputs stay float32; targets are rounded/clipped to {0,1,2}
+        tr_x = torch.tensor(tr, dtype=torch.float32)
         va_x = torch.tensor(va, dtype=torch.float32)
+        tr_y = torch.tensor(np.clip(np.round(tr), 0, 2).astype(np.int64), dtype=torch.long)
+        va_y = torch.tensor(np.clip(np.round(va), 0, 2).astype(np.int64), dtype=torch.long)
+        te_x = torch.tensor(te, dtype=torch.float32) if te is not None else None
+        te_y = torch.tensor(np.clip(np.round(te), 0, 2).astype(np.int64), dtype=torch.long) \
+            if te is not None else None
+        return (tr_x, va_x, tr_y, va_y, stats, te_x, te_y)
 
-        tr_y = torch.tensor(tr, dtype=torch.long)      # CE targets
-        va_y = torch.tensor(va, dtype=torch.long)
-
-        return (tr_x, va_x, tr_y, va_y, stats)
-    
     if loss_type == "ORD":
         tr_x = torch.tensor(tr, dtype=torch.float32)
         va_x = torch.tensor(va, dtype=torch.float32)
-        tr_y = torch.tensor(tr, dtype=torch.long)
-        va_y = torch.tensor(va, dtype=torch.long)
-        return (tr_x, va_x, tr_y, va_y, stats)
+        tr_y = torch.tensor(np.clip(np.round(tr), 0, 2).astype(np.int64), dtype=torch.long)
+        va_y = torch.tensor(np.clip(np.round(va), 0, 2).astype(np.int64), dtype=torch.long)
+        te_x = torch.tensor(te, dtype=torch.float32) if te is not None else None
+        te_y = torch.tensor(np.clip(np.round(te), 0, 2).astype(np.int64), dtype=torch.long) \
+            if te is not None else None
+        return (tr_x, va_x, tr_y, va_y, stats, te_x, te_y)
 
-    
     if loss_type == "BCE":
         tr, va = tr / 2.0, va / 2.0               # → {0, 0.5, 1}
-
+        te = te / 2.0 if te is not None else None
     elif loss_type == "MSE_STD":
         m  = tr.mean(0, keepdims=True)
         s  = tr.std(0, keepdims=True); s[s < 1e-8] = 1.0
         stats = {"mean": m, "std": s}
         tr, va = (tr - m) / s, (va - m) / s
-    
+        te = (te - m) / s if te is not None else None
+
+    te_x = torch.tensor(te, dtype=torch.float32) if te is not None else None
     return (torch.tensor(tr, dtype=torch.float32),
-            torch.tensor(va, dtype=torch.float32), stats)
+            torch.tensor(va, dtype=torch.float32), stats, te_x)
 
 def compute_class_weights(tr_geno_block, eps=1e-6):
     # tr_geno_block: numpy array (N,P) with values 0/1/2 (ints or exact floats)
-    y = tr_geno_block.reshape(-1).astype(np.int64)
+    y = np.clip(np.round(tr_geno_block.reshape(-1)), 0, 2).astype(np.int64)
     counts = np.bincount(y, minlength=3).astype(np.float64)
     freq = counts / (counts.sum() + eps)
     w = 1.0 / (freq + eps)
     w = w / w.mean()  # normalize so average weight ~1
     return w.tolist(), counts.tolist()
 
-def ordinal_loss(logits2: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+def ordinal_loss(logits2: torch.Tensor, targets: torch.Tensor,
+                 class_weights: torch.Tensor = None) -> torch.Tensor:
     """
     logits2: (B,P,2)
       logits2[...,0] = t0
       logits2[...,1] = raw_delta  (we enforce t1 = t0 + softplus(delta) so t1>=t0)
     targets: (B,P) in {0,1,2}
-    Returns: sum-over-features / mean-over-batch
+    class_weights: optional (3,) tensor; per-sample weight = class_weights[target]
+    Returns: per-element (weighted) mean over batch and features
     """
-    B = targets.size(0)
     t0 = logits2[..., 0]
-    t1 = t0 + F.softplus(logits2[..., 1])   # enforce ordering
-
-    p0 = torch.sigmoid(t0)  # P(Y<=0)
-    p1 = torch.sigmoid(t1)  # P(Y<=1)
+    t1 = t0 + F.softplus(logits2[..., 1])
+    p0 = torch.sigmoid(t0)
+    p1 = torch.sigmoid(t1)
 
     p_cls = torch.stack([p0, p1 - p0, 1 - p1], dim=-1).clamp(1e-6, 1.0)
-    log_p = p_cls.log().gather(-1, targets.clamp(0, 2).unsqueeze(-1)).squeeze(-1)
-    return -log_p.sum() / B
+    log_p = p_cls.log().gather(-1, targets.clamp(0, 2).unsqueeze(-1)).squeeze(-1)  # (B,P)
+
+    if class_weights is not None:
+        # Per-element weight by true class
+        w = class_weights[targets.clamp(0, 2)]   # (B,P)
+        # Weighted mean: sum(w * loss) / sum(w), so the result stays on a similar scale
+        return -(w * log_p).sum() / (w.sum() + 1e-12)
+    return -log_p.mean()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -456,6 +458,7 @@ def ordinal_loss(logits2: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
 # ──────────────────────────────────────────────────────────────────
 def train_block_vae(model, tr_t, va_t, cfg, device, log_csv, tr_y=None, va_y=None):
     v = cfg["vae"]
+    free_bits = float(v.get("free_bits", 0.0))
 
     if tr_y is None:
         tr_ds = TensorDataset(tr_t)
@@ -487,6 +490,7 @@ def train_block_vae(model, tr_t, va_t, cfg, device, log_csv, tr_y=None, va_y=Non
     )
 
     best_val, wait, best_sd, log = float("inf"), 0, None, []
+    best_recon = float("inf")
     best_epoch = 0
     best_metrics = {}
 
@@ -507,7 +511,7 @@ def train_block_vae(model, tr_t, va_t, cfg, device, log_csv, tr_y=None, va_y=Non
                 y = y.to(device)
             opt.zero_grad()
             recon, mu, lv = model(x)
-            loss, recon_loss, kl_loss = model.compute_loss(x, recon, mu, lv, beta, y)
+            loss, recon_loss, kl_loss = model.compute_loss(x, recon, mu, lv, beta, y, free_bits=free_bits)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), v["grad_clip"])
             opt.step()
@@ -532,7 +536,7 @@ def train_block_vae(model, tr_t, va_t, cfg, device, log_csv, tr_y=None, va_y=Non
                 if y is not None:
                     y = y.to(device)
                 recon, mu, lv = model(x)
-                loss, recon_loss, kl_loss = model.compute_loss(x, recon, mu, lv, beta, y)
+                loss, recon_loss, kl_loss = model.compute_loss(x, recon, mu, lv, beta, y, free_bits=free_bits)
                 total_va_loss += loss.item() * x.size(0)
                 total_va_recon += recon_loss.item() * x.size(0)
                 total_va_kl += kl_loss.item() * x.size(0)
@@ -551,20 +555,22 @@ def train_block_vae(model, tr_t, va_t, cfg, device, log_csv, tr_y=None, va_y=Non
             "va_kl": vK,
         })
 
-        if vL < best_val:
-            best_val, wait = vL, 0
-            best_epoch = ep
-            best_metrics = {
-                "best_val_loss": vL,
-                "best_val_recon": vR,
-                "best_val_kl": vK,
-                "best_tr_loss": tL,
-                "best_tr_recon": tR,
-                "best_tr_kl": tK,
-            }
-            best_sd = {k: w.cpu().clone() for k, w in model.state_dict().items()}
-        else:
-            wait += 1
+        if ep > v["beta_warmup"]:
+            if vR < best_recon:
+                # best_val, wait = vL, 0
+                best_recon, wait = vR, 0
+                best_epoch = ep
+                best_metrics = {
+                    "best_val_loss": vL,
+                    "best_val_recon": vR,
+                    "best_val_kl": vK,
+                    "best_tr_loss": tL,
+                    "best_tr_recon": tR,
+                    "best_tr_kl": tK,
+                }
+                best_sd = {k: w.cpu().clone() for k, w in model.state_dict().items()}
+            else:
+                wait += 1
 
         if wait > v["patience"]:
             print(f"      early stop at epoch {ep}")
@@ -687,7 +693,61 @@ def block_maf_stats(G012: np.ndarray) -> dict:
         "maf_frac_lt_20pct": float(np.mean(maf < 0.20)),
     }
 
-def eval_genotype_metrics(model, x_t, loss_type, stats):
+def pca_block_baseline(geno_tr: np.ndarray, geno_va: np.ndarray, n_components: int):
+    """
+    Fit PCA on training genotype matrix; reconstruct validation set.
+    Uses the same number of components as the VAE latent dimension.
+    Returns (pca_conc_va, pca_r2_va) or (nan, nan) on any failure.
+    """
+    try:
+        n_comp = min(n_components, geno_tr.shape[0] - 1, geno_tr.shape[1])
+        if n_comp < 1:
+            raise ValueError(
+                f"effective n_components={n_comp} < 1 "
+                f"(requested {n_components}, train_n={geno_tr.shape[0]}, p={geno_tr.shape[1]})"
+            )
+        pca = PCA(n_components=n_comp)
+        pca.fit(geno_tr.astype(np.float64))
+        rec_cont = pca.inverse_transform(
+            pca.transform(geno_va.astype(np.float64))
+        ).astype(np.float32)
+        rec_cont = np.clip(rec_cont, 0.0, 2.0)
+        truth_cont = geno_va.astype(np.float32)
+        # R² on continuous dosage — mirrors the r2_va definition in eval_genotype_metrics
+        var = float(np.var(truth_cont))
+        r2 = float(1.0 - np.mean((truth_cont - rec_cont) ** 2) / (var + 1e-12))
+        # concordance after rounding to {0,1,2}
+        pred = np.clip(np.round(rec_cont), 0, 2).astype(np.int8)
+        truth = np.clip(np.round(truth_cont), 0, 2).astype(np.int8)
+        conc = float(np.mean(pred == truth))
+        return conc, r2
+    except Exception as exc:
+        print(f"[pca_baseline] WARNING: failed (n_components={n_components}): {exc}")
+        return float("nan"), float("nan")
+
+
+def extract_pca_block_emb(geno: np.ndarray, tr_ix: np.ndarray, n_components: int):
+    """Fit PCA on training subjects only; transform all subjects.
+
+    Returns (emb, pca_model, n_components_used).
+    emb shape: (N_all, d) float32, where d = min(n_components, len(tr_ix)-1, n_features).
+    """
+    n_comp = max(1, min(n_components, len(tr_ix) - 1, geno.shape[1]))
+    pca = PCA(n_components=n_comp)
+    pca.fit(geno[tr_ix].astype(np.float64))
+    emb = pca.transform(geno.astype(np.float64)).astype(np.float32)
+    return emb, pca, n_comp
+
+
+def majority_baseline_from_train(train_geno012: np.ndarray) -> np.ndarray:
+    """Return per-SNP majority genotype class (0/1/2) learned from training subjects only."""
+    g = np.clip(np.round(train_geno012), 0, 2).astype(np.int8)
+    counts = np.stack([(g == c).sum(axis=0) for c in (0, 1, 2)], axis=1)  # (P, 3)
+    return counts.argmax(axis=1).astype(np.int8)  # (P,)
+
+
+def eval_genotype_metrics(model, x_t, loss_type, stats, baseline_mode=None,
+                          ld_corr_repeats=1, ld_corr_max_snps=200):
     """
     Returns:
       - conc: exact match fraction (your current metric)
@@ -730,16 +790,22 @@ def eval_genotype_metrics(model, x_t, loss_type, stats):
 
     pred = np.clip(np.round(pred_cont), 0, 2).astype(np.int8)
     truth = np.clip(np.round(truth_cont), 0, 2).astype(np.int8)
-    # ld = ld_corr_score(truth.round().clip(0,2).astype(np.float32), pred.clip(0, None), max_snps=200, seed=0)
-    ld = ld_corr_score(truth, pred, max_snps=200, seed=0)
+    if ld_corr_repeats <= 1:
+        ld = ld_corr_score(truth, pred, max_snps=ld_corr_max_snps, seed=0)
+    else:
+        ld = float(np.mean([
+            ld_corr_score(truth, pred, max_snps=ld_corr_max_snps, seed=s)
+            for s in range(ld_corr_repeats)
+        ]))
     conc = float(np.mean(pred == truth))
 
     # baseline: per-SNP majority-class predictor
-    # (compute mode of truth for each SNP column, then compare)
-    # truth: (N, P). mode per column:
-    # counts shape (P, 3)
-    counts = np.stack([(truth == g).sum(axis=0) for g in (0, 1, 2)], axis=1)  # (P,3)
-    mode = counts.argmax(axis=1).astype(np.int8)  # (P,)
+    # Baseline mode can be supplied from training data to avoid validation/test leakage.
+    if baseline_mode is not None:
+        mode = np.asarray(baseline_mode, dtype=np.int8)
+    else:
+        counts = np.stack([(truth == g).sum(axis=0) for g in (0, 1, 2)], axis=1)  # (P,3)
+        mode = counts.argmax(axis=1).astype(np.int8)
     base_pred = np.broadcast_to(mode, truth.shape)  # (N,P)
     base_conc = float(np.mean(base_pred == truth))
 
@@ -776,6 +842,47 @@ def eval_genotype_metrics(model, x_t, loss_type, stats):
     }
 
 
+def compute_latent_diagnostics(model: "BlockVAE", va_x: torch.Tensor) -> dict:
+    """Encode validation set with the best checkpoint and compute per-dim latent stats.
+
+    Returns scalar summary keys plus private array keys prefixed with '_'.
+    Callers should pop the '_*' keys to get the arrays before storing the dict.
+    """
+    model.eval()
+    with torch.no_grad():
+        mu, lv = model.encode(va_x)
+
+    mu_np = mu.cpu().numpy()             # (N, d)
+    lv_np = lv.cpu().numpy()             # (N, d)
+
+    kl_per_dim = -0.5 * (1.0 + lv_np - mu_np ** 2 - np.exp(lv_np))  # (N, d)
+    kl_per_dim_mean = kl_per_dim.mean(axis=0)                         # (d,)
+    mu_var_per_dim = mu_np.var(axis=0)                                 # (d,)
+    sigma_per_dim = np.exp(0.5 * lv_np).mean(axis=0)                  # (d,)
+
+    d = mu_np.shape[1]
+    n_active = int((mu_var_per_dim > 0.01).sum())
+
+    return {
+        "n_active_latents": n_active,
+        "frac_dims_collapsed": round(float(1.0 - n_active / d), 4) if d > 0 else float("nan"),
+        "latent_underused": bool(n_active < d / 2),
+        "kl_per_dim_min":    round(float(kl_per_dim_mean.min()),    6),
+        "kl_per_dim_median": round(float(np.median(kl_per_dim_mean)), 6),
+        "kl_per_dim_max":    round(float(kl_per_dim_mean.max()),    6),
+        "mu_var_min":    round(float(mu_var_per_dim.min()),    6),
+        "mu_var_median": round(float(np.median(mu_var_per_dim)), 6),
+        "mu_var_max":    round(float(mu_var_per_dim.max()),    6),
+        "sigma_min":    round(float(sigma_per_dim.min()),    6),
+        "sigma_median": round(float(np.median(sigma_per_dim)), 6),
+        "sigma_max":    round(float(sigma_per_dim.max()),    6),
+        # arrays — pop before logging to CSV
+        "_kl_per_dim":    kl_per_dim_mean,
+        "_mu_var_per_dim": mu_var_per_dim,
+        "_sigma_per_dim":  sigma_per_dim,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────
 # 7.  MAIN  PHASE-1  PIPELINE
 # ──────────────────────────────────────────────────────────────────
@@ -784,6 +891,7 @@ def run_tuning(cfg):
     tc = cfg.get("tuning", {})
 
     print("\n══════ Tuning Mode ══════")
+    print("[tuning] test_frac is ignored in tuning mode; tuning uses train/validation only and does not evaluate test.")
     print(f"Tuning config - loss: {tc.get('loss', 'N/A')}")
     print(f"Tuning config - metric: {tc.get('metric', 'N/A')}")
     print(f"Tuning config - blocks from config: {tc.get('blocks', [])}")
@@ -847,20 +955,22 @@ def run_tuning(cfg):
     # Results
     results = []
     for bid in tuning_blocks:
+        # Reseed per-block so each block is independently reproducible
+        set_seed(vc["seed"] + (hash(bid) & 0xFFFF))
         if bid not in blocks:
             continue
         G = blocks[bid]["geno"]
         p = G.shape[1]
         d_block = latent_dim_for_p(p, cfg)
         if lt in ["ORD", "CAT"]:
-            tr_t, va_t, tr_y, va_y, stats = prepare_data(G, lt, tr_ix, va_ix)
+            tr_t, va_t, tr_y, va_y, stats, *_ = prepare_data(G, lt, tr_ix, va_ix)
         else:
-            tr_t, va_t, stats = prepare_data(G, lt, tr_ix, va_ix)
+            tr_t, va_t, stats, *_ = prepare_data(G, lt, tr_ix, va_ix)
             tr_y = va_y = None
 
         for drop, lr, beta_max in combos:
             # Reset seed for comparability
-            set_seed(vc["seed"])
+            set_seed(vc["seed"] + (hash(bid) & 0xFFFF) + (hash((drop, lr, beta_max)) & 0xFFFF))
             
             cfg_copy = copy.deepcopy(cfg)
             cfg_copy["vae"]["dropout"] = drop
@@ -875,11 +985,49 @@ def run_tuning(cfg):
             if lt in ["ORD", "CAT"] and (tr_y is None or va_y is None):
                 print(f"[tuning][WARN] expected targets for {lt} but tr_y/va_y missing (tr_y={tr_y}, va_y={va_y})")
 
-            model = BlockVAE(p, d_block, drop, loss_type=lt)
+            if lt == "CAT":
+                w, _ = compute_class_weights(blocks[bid]["geno"][tr_ix])
+                w = np.clip(np.array(w, dtype=np.float32), 0.25, vc.get("cat_weight_clip", 10.0)).tolist()
+                model = BlockVAE(p, d_block, drop, loss_type="CAT", class_weights=w)
+            elif lt == "ORD" and bool(vc.get("ord_weighted", False)):
+                w, _ = compute_class_weights(blocks[bid]["geno"][tr_ix])
+                w = np.clip(np.array(w, dtype=np.float32), 0.25, vc.get("ord_weight_clip", 10.0)).tolist()
+                model = BlockVAE(p, d_block, drop, loss_type="ORD", class_weights=w)
+            else:
+                model = BlockVAE(p, d_block, drop, loss_type=lt)
+
             t0 = time.time()
-            log, best_epoch, best_metrics = train_block_vae(model, tr_t, va_t, cfg_copy, dev, None, tr_y=tr_y, va_y=va_y)
+            log, best_epoch, best_metrics = train_block_vae(
+                model, tr_t, va_t, cfg_copy, dev, None, tr_y=tr_y, va_y=va_y
+            )
             dt = time.time() - t0
-            m_va = eval_genotype_metrics(model, va_t, lt, stats)
+
+            # (2) Train-derived majority baseline → collapse-aware gain.
+            # Matches run_phase1 so tuning and production are comparable.
+            baseline_mode = majority_baseline_from_train(blocks[bid]["geno"][tr_ix])
+            ld_reps = int(vc.get("ld_corr_repeats", 1))
+            ld_max_snps = int(vc.get("ld_corr_max_snps", 200))
+            m_va = eval_genotype_metrics(
+                model, va_t, lt, stats,
+                baseline_mode=baseline_mode,
+                ld_corr_repeats=ld_reps,
+                ld_corr_max_snps=ld_max_snps,
+            )
+
+            # (3) Latent diagnostics on the best checkpoint
+            # (train_block_vae already restored best_sd into `model`).
+            diag = compute_latent_diagnostics(model, va_t)
+            # Tuning rows only need scalars; drop the per-dim arrays.
+            for _k in ("_kl_per_dim", "_mu_var_per_dim", "_sigma_per_dim"):
+                diag.pop(_k, None)
+
+            conc_va = m_va["conc"]
+            base_conc_va = m_va["base_conc"]
+            gain_va = (
+                conc_va - base_conc_va
+                if np.isfinite(conc_va) and np.isfinite(base_conc_va)
+                else float("nan")
+            )
 
             results.append({
                 "loss": lt,
@@ -889,10 +1037,25 @@ def run_tuning(cfg):
                 "beta_max": beta_max,
                 "best_epoch": best_epoch,
                 "best_val_loss": best_metrics["best_val_loss"],
+                # reconstruction-side metrics
                 "bal_acc_va": m_va["bal_acc"],
                 "ld_corr_va": m_va["ld_corr"],
-                "conc_va": m_va["conc"],
-                "runtime_sec": dt
+                "conc_va": conc_va,
+                # (2) baseline + gain — collapse-aware selection target
+                "base_conc_va": base_conc_va,
+                "concordance_gain_va": gain_va,
+                # (3) latent diagnostics
+                "n_active_latents": diag["n_active_latents"],
+                "frac_dims_collapsed": diag["frac_dims_collapsed"],
+                "latent_underused": diag["latent_underused"],
+                "kl_per_dim_min": diag["kl_per_dim_min"],
+                "kl_per_dim_median": diag["kl_per_dim_median"],
+                "kl_per_dim_max": diag["kl_per_dim_max"],
+                "mu_var_min": diag["mu_var_min"],
+                "mu_var_median": diag["mu_var_median"],
+                "mu_var_max": diag["mu_var_max"],
+                "sigma_median": diag["sigma_median"],
+                "runtime_sec": dt,
             })
 
     # Save results
@@ -900,25 +1063,66 @@ def run_tuning(cfg):
     rdf.to_csv(tuning_dir / "tuning_results.csv", index=False)
 
     # Aggregate with std
-    agg = rdf.groupby(["dropout", "lr", "beta_max"]).agg({
-        "best_val_loss": ["mean", "std"],
-        "bal_acc_va": ["mean", "std"],
-        "ld_corr_va": ["mean", "std"],
-        "conc_va": ["mean", "std"],
-        "block": "count"
-    }).reset_index()
-    agg.columns = ["dropout", "lr", "beta_max", "mean_best_val_loss", "std_best_val_loss", "mean_bal_acc_va", "std_bal_acc_va", "mean_ld_corr_va", "std_ld_corr_va", "mean_conc_va", "std_conc_va", "n_blocks"]
+    # Columns to aggregate as (mean, std) across blocks.
+    agg_metric_cols = [
+        "best_val_loss",
+        "bal_acc_va",
+        "ld_corr_va",
+        "conc_va",
+        "base_conc_va",
+        "concordance_gain_va",
+        "n_active_latents",
+        "frac_dims_collapsed",
+        "kl_per_dim_median",
+        "mu_var_median",
+        "sigma_median",
+    ]
+    agg_spec = {c: ["mean", "std"] for c in agg_metric_cols}
+    agg_spec["block"] = "count"
+
+    agg = rdf.groupby(["dropout", "lr", "beta_max"]).agg(agg_spec).reset_index()
+
+    # Flatten MultiIndex columns: ("bal_acc_va","mean") -> "mean_bal_acc_va".
+    new_cols = []
+    for c in agg.columns:
+        if isinstance(c, tuple):
+            name, stat = c
+            if name == "block" and stat == "count":
+                new_cols.append("n_blocks")
+            elif stat == "":
+                new_cols.append(name)
+            else:
+                new_cols.append(f"{stat}_{name}")
+        else:
+            new_cols.append(c)
+    agg.columns = new_cols
+
+    # Optional: also flag configs where any block collapsed, useful for filtering.
+    collapsed = (
+        rdf.assign(_col=rdf["latent_underused"].astype(bool))
+        .groupby(["dropout", "lr", "beta_max"])["_col"]
+        .sum()
+        .reset_index()
+        .rename(columns={"_col": "n_blocks_collapsed"})
+    )
+    agg = agg.merge(collapsed, on=["dropout", "lr", "beta_max"], how="left")
+
     agg.to_csv(tuning_dir / "tuning_summary.csv", index=False)
 
     # Select best
     metric = tc.get("metric", "bal_acc_va")
     mean_col = f"mean_{metric}"
-    if metric in ["bal_acc_va", "ld_corr_va", "conc_va"]:
+    higher_is_better = {
+        "bal_acc_va", "ld_corr_va", "conc_va",
+        "concordance_gain_va", "n_active_latents",
+    }
+    lower_is_better = {"best_val_loss", "frac_dims_collapsed"}
+    if metric in higher_is_better:
         best_row = agg.loc[agg[mean_col].idxmax()]
-    elif metric == "best_val_loss":
+    elif metric in lower_is_better:
         best_row = agg.loc[agg[mean_col].idxmin()]
     else:
-        best_row = agg.iloc[0]
+        raise ValueError(f"[tuning] unknown selection metric: {metric}")
 
     best_params = {
         "loss": str(lt),
@@ -1089,14 +1293,27 @@ def run_phase1(cfg, *, config_path=None):
     pd.DataFrame({"IID": subjects}).to_csv(out/"subjects.csv", index=False)
 
     # ---- split (same for every loss type) ----
-    N = len(subjects); n_val = int(N * vc["val_frac"])
-    perm = np.random.permutation(N)
-    va_ix, tr_ix = perm[:n_val], perm[n_val:]
+    N      = len(subjects)
+    n_test = int(N * vc.get("test_frac", 0.0))
+    n_val  = int(N * vc["val_frac"])
+    if n_val < 1:
+        raise ValueError(f"val_frac={vc['val_frac']} yields 0 validation subjects for N={N}")
+    if N - n_test - n_val < 2:
+        raise ValueError(
+            f"Train set too small (N={N}, n_test={n_test}, n_val={n_val}). "
+            "Reduce test_frac or val_frac."
+        )
+    perm    = np.random.permutation(N)
+    test_ix = perm[:n_test]
+    va_ix   = perm[n_test:n_test + n_val]
+    tr_ix   = perm[n_test + n_val:]
     np.save(out/"train_idx.npy", tr_ix)
     np.save(out/"val_idx.npy",   va_ix)
-    print(f"[split] train {len(tr_ix)} / val {len(va_ix)}")
+    np.save(out/"test_idx.npy",  test_ix)
+    print(f"[split] train {len(tr_ix)} / val {len(va_ix)} / test {len(test_ix)}")
     pd.DataFrame({"IID": subjects[tr_ix]}).to_csv(out / "train_subjects.csv", index=False)
     pd.DataFrame({"IID": subjects[va_ix]}).to_csv(out / "val_subjects.csv", index=False)
+    pd.DataFrame({"IID": subjects[test_ix]}).to_csv(out / "test_subjects.csv", index=False)
     
     # Representative blocks
     rep_cfg = cfg.get("representative", {})
@@ -1116,7 +1333,11 @@ def run_phase1(cfg, *, config_path=None):
     out_rep = out / "representative_blocks"
     out_rep.mkdir(exist_ok=True)
     
+    ld_reps = int(vc.get("ld_corr_repeats", 1))
+    ld_max_snps = int(vc.get("ld_corr_max_snps", 200))
+
     rows = []  # summary collector
+    _cm_cache: dict = {}  # (lt, bid) → confusion_matrix; filled during training for deferred auto-rep save
 
     for lt in cfg["loss_functions"]:
         print(f"\n{'═'*55}\n  Loss: {lt}\n{'═'*55}")
@@ -1127,9 +1348,15 @@ def run_phase1(cfg, *, config_path=None):
         emb_dict = {}  # block_id → (N, d)
 
         for bid in block_ids:
+            # Reseed per-block so each block is independently reproducible
+            set_seed(vc["seed"] + (hash(bid) & 0xFFFF))
             G     = blocks[bid]["geno"]
             n0_tr, n1_tr, n2_tr = geno_class_counts(G[tr_ix])
             n0_va, n1_va, n2_va = geno_class_counts(G[va_ix])
+            if len(test_ix) > 0:
+                n0_test, n1_test, n2_test = geno_class_counts(G[test_ix])
+            else:
+                n0_test = n1_test = n2_test = 0
             p     = G.shape[1]
             maf_stats = block_maf_stats(G)
             print(f"\n  ── {bid} ({p} SNPs) ──")
@@ -1137,16 +1364,21 @@ def run_phase1(cfg, *, config_path=None):
             d_block = latent_dim_for_p(p, cfg)
 
             if lt in ("CAT", "ORD"):
-                tr_t, va_t, tr_y, va_y, stats = prepare_data(G, lt, tr_ix, va_ix)
+                tr_t, va_t, tr_y, va_y, stats, te_t, te_y = prepare_data(G, lt, tr_ix, va_ix, test_ix)
             else:
-                tr_t, va_t, stats = prepare_data(G, lt, tr_ix, va_ix)
-                tr_y = va_y = None
+                tr_t, va_t, stats, te_t = prepare_data(G, lt, tr_ix, va_ix, test_ix)
+                tr_y = va_y = te_y = None
 
             if lt == "CAT":
                 w, counts = compute_class_weights(blocks[bid]["geno"][tr_ix])
                 w = np.clip(np.array(w, dtype=np.float32), 0.25, vc.get("cat_weight_clip", 10.0)).tolist()
                 model = BlockVAE(p, d_block, vc["dropout"], loss_type="CAT", class_weights=w)
                 print(f"      latent_dim {d_block} | CAT weights {w}  counts {counts}")
+            elif lt == "ORD" and bool(vc.get("ord_weighted", False)):
+                w, counts = compute_class_weights(blocks[bid]["geno"][tr_ix])
+                w = np.clip(np.array(w, dtype=np.float32), 0.25, vc.get("ord_weight_clip", 10.0)).tolist()
+                model = BlockVAE(p, d_block, vc["dropout"], loss_type="ORD", class_weights=w)
+                print(f"      latent_dim {d_block} | ORD weights {w}  counts {counts}")
             else:
                 model = BlockVAE(p, d_block, vc["dropout"], loss_type=lt)
                 print(f"      latent_dim {d_block}")
@@ -1158,33 +1390,92 @@ def run_phase1(cfg, *, config_path=None):
             log, best_epoch, best_metrics = train_block_vae(model, tr_t, va_t, cfg, dev,ld/"logs"/f"{bid}.csv",tr_y=tr_y, va_y=va_y)
             dt  = time.time() - t0
 
-            m_tr = eval_genotype_metrics(model, tr_t, lt, stats)
-            m_va = eval_genotype_metrics(model, va_t, lt, stats)
+            baseline_mode = majority_baseline_from_train(G[tr_ix])
+            m_tr = eval_genotype_metrics(model, tr_t, lt, stats, baseline_mode=baseline_mode,
+                                         ld_corr_repeats=ld_reps, ld_corr_max_snps=ld_max_snps)
+            m_va = eval_genotype_metrics(model, va_t, lt, stats, baseline_mode=baseline_mode,
+                                         ld_corr_repeats=ld_reps, ld_corr_max_snps=ld_max_snps)
+            pca_conc_va, pca_r2_va = pca_block_baseline(G[tr_ix], G[va_ix], d_block)
+            has_test = te_t is not None
+            if has_test:
+                m_te = eval_genotype_metrics(model, te_t, lt, stats, baseline_mode=baseline_mode,
+                                             ld_corr_repeats=ld_reps, ld_corr_max_snps=ld_max_snps)
+                pca_conc_te, pca_r2_te = pca_block_baseline(G[tr_ix], G[test_ix], d_block)
+            else:
+                _nan = float("nan")
+                m_te = {k: _nan for k in ["conc", "base_conc", "bal_acc", "acc0", "acc1", "acc2", "r2", "ld_corr"]}
+                pca_conc_te = pca_r2_te = _nan
+
+            # Latent collapse diagnostics (best checkpoint already loaded into model)
+            diag = compute_latent_diagnostics(model, va_t)
+            diag_dir = ld / "diagnostics" / bid
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            np.save(diag_dir / "kl_per_dim.npy",     diag.pop("_kl_per_dim"))
+            np.save(diag_dir / "mu_var_per_dim.npy", diag.pop("_mu_var_per_dim"))
+            np.save(diag_dir / "sigma_per_dim.npy",  diag.pop("_sigma_per_dim"))
+            if diag.get("latent_underused"):
+                print(f"      [WARN] latent underused: {diag['n_active_latents']}/{d_block} dims active")
+
+            # KL/reconstruction balance at the best checkpoint
+            _bvk = best_metrics.get("best_val_kl", float("nan"))
+            _bvr = best_metrics.get("best_val_recon", float("nan"))
+            kl_recon_ratio = (_bvk / _bvr) if (np.isfinite(_bvr) and _bvr > 0) else float("nan")
+            beta_warmup_cfg = int(vc.get("beta_warmup", 50))
+            beta_max_cfg = float(vc.get("beta_max", 0.5))
+            beta_eff_at_best = round(beta_max_cfg * min(1.0, best_epoch / max(beta_warmup_cfg, 1)), 6)
+            best_before_full_beta = bool(best_epoch < beta_warmup_cfg)
+            te_str = f" | conc te {m_te['conc']:.4f}" if has_test and np.isfinite(m_te["conc"]) else ""
             print(
-                f"      conc tr {m_tr['conc']:.4f}  va {m_va['conc']:.4f} | "
+                f"      conc tr {m_tr['conc']:.4f}  va {m_va['conc']:.4f}{te_str} | "
                 f"base va {m_va['base_conc']:.4f} | bal va {m_va['bal_acc']:.4f} | "
                 f"r2 va {m_va['r2']:.4f} | ld_corr va {m_va['ld_corr']:.4f}  ({dt:.1f}s)"
             )
 
-            if bid in rep_blocks_set and "confusion_matrix" in m_va and m_va["confusion_matrix"] is not None:
+            _cm = m_va.get("confusion_matrix")
+            if _cm is not None:
+                _cm_cache[(lt, bid)] = _cm
+            if bid in rep_blocks_set and _cm is not None:
                 rep_dir = out_rep / bid
                 rep_dir.mkdir(exist_ok=True)
-                np.save(rep_dir / f"{bid}_{lt}_confusion.npy", m_va["confusion_matrix"])
-                plot_confusion_matrix(m_va["confusion_matrix"], bid, lt, rep_dir)
+                np.save(rep_dir / f"{bid}_{lt}_confusion.npy", _cm)
+                plot_confusion_matrix(_cm, bid, lt, rep_dir)
 
             emb = extract_emb(model, G, lt, stats)
+            if cfg.get("vae", {}).get("standardize_embeddings", True):
+                scaler = StandardScaler()
+                scaler.fit(emb[tr_ix])
+                emb = scaler.transform(emb).astype(np.float32)
             emb_dict[bid] = emb
             np.save(ld/"embeddings"/f"{bid}.npy", emb)
             torch.save(model.state_dict(), ld/"models"/f"{bid}.pt")
 
             fin = log[-1]
+            kl_final    = fin.get("va_kl",    float("nan"))
+            recon_final = fin.get("va_recon", float("nan"))
+            kl_at_best_over_kl_final = (
+                round(_bvk / kl_final, 6)
+                if (np.isfinite(kl_final) and kl_final > 0) else float("nan")
+            )
+            ord_w_active = (lt == "ORD" and bool(vc.get("ord_weighted", False)))
             rows.append(dict(
                 loss=lt, block=bid, gene=blocks[bid]["gene"], latent_dim=d_block,
                 n_snps=p, **maf_stats, params=npar, epochs=len(log),
+                ord_weighted=ord_w_active,
                 best_epoch=best_epoch,
                 n0_tr=n0_tr, n1_tr=n1_tr, n2_tr=n2_tr,
                 n0_va=n0_va, n1_va=n1_va, n2_va=n2_va,
+                n0_test=n0_test, n1_test=n1_test, n2_test=n2_test,
+                # NOTE: best_val_loss is not comparable across loss functions (MSE/ORD/CAT)
                 **best_metrics,
+                # KL/reconstruction balance at the best checkpoint
+                kl_recon_ratio=round(kl_recon_ratio, 6) if np.isfinite(kl_recon_ratio) else float("nan"),
+                beta_eff_at_best=beta_eff_at_best,
+                best_before_full_beta=best_before_full_beta,
+                kl_final=round(kl_final, 6) if np.isfinite(kl_final) else float("nan"),
+                recon_final=round(recon_final, 6) if np.isfinite(recon_final) else float("nan"),
+                kl_at_best_over_kl_final=kl_at_best_over_kl_final,
+                # Latent collapse diagnostics
+                **diag,
                 conc_tr=round(m_tr["conc"],4),
                 conc_va=round(m_va["conc"],4),
                 base_conc_va=round(m_va["base_conc"],4),
@@ -1195,6 +1486,24 @@ def run_phase1(cfg, *, config_path=None):
                 acc2_va=round(m_va["acc2"],4) if not np.isnan(m_va["acc2"]) else np.nan,
                 r2_va=round(m_va["r2"],4),
                 ld_corr_va=round(m_va["ld_corr"], 4) if np.isfinite(m_va["ld_corr"]) else np.nan,
+                compression_ratio=round(d_block / p, 6),
+                pca_conc_va=round(pca_conc_va, 4) if np.isfinite(pca_conc_va) else np.nan,
+                pca_r2_va=round(pca_r2_va, 4) if np.isfinite(pca_r2_va) else np.nan,
+                vae_minus_pca_conc_va=round(m_va["conc"] - pca_conc_va, 4) if np.isfinite(pca_conc_va) else np.nan,
+                vae_minus_pca_r2_va=round(m_va["r2"] - pca_r2_va, 4) if np.isfinite(pca_r2_va) else np.nan,
+                conc_test=round(m_te["conc"], 4) if np.isfinite(m_te["conc"]) else np.nan,
+                base_conc_test=round(m_te["base_conc"], 4) if np.isfinite(m_te["base_conc"]) else np.nan,
+                concordance_gain_test=round(m_te["conc"] - m_te["base_conc"], 4) if np.isfinite(m_te["conc"]) and np.isfinite(m_te["base_conc"]) else np.nan,
+                bal_acc_test=round(m_te["bal_acc"], 4) if np.isfinite(m_te["bal_acc"]) else np.nan,
+                acc0_test=round(m_te["acc0"], 4) if np.isfinite(m_te["acc0"]) else np.nan,
+                acc1_test=round(m_te["acc1"], 4) if np.isfinite(m_te["acc1"]) else np.nan,
+                acc2_test=round(m_te["acc2"], 4) if np.isfinite(m_te["acc2"]) else np.nan,
+                r2_test=round(m_te["r2"], 4) if np.isfinite(m_te["r2"]) else np.nan,
+                ld_corr_test=round(m_te["ld_corr"], 4) if np.isfinite(m_te["ld_corr"]) else np.nan,
+                pca_conc_test=round(pca_conc_te, 4) if np.isfinite(pca_conc_te) else np.nan,
+                pca_r2_test=round(pca_r2_te, 4) if np.isfinite(pca_r2_te) else np.nan,
+                vae_minus_pca_conc_test=round(m_te["conc"] - pca_conc_te, 4) if np.isfinite(m_te["conc"]) and np.isfinite(pca_conc_te) else np.nan,
+                vae_minus_pca_r2_test=round(m_te["r2"] - pca_r2_te, 4) if np.isfinite(m_te["r2"]) and np.isfinite(pca_r2_te) else np.nan,
                 sec=round(dt,1)
             ))
 
@@ -1217,8 +1526,95 @@ def run_phase1(cfg, *, config_path=None):
 
     # ---- save block-order metadata (Phase 2 needs it) ----
     meta = [dict(pos=i, block_id=b, gene=blocks[b]["gene"],
-                 n_snps=blocks[b]["n_snps"]) for i, b in enumerate(block_ids)]
+                 n_snps=blocks[b]["n_snps"],
+                 latent_dim=latent_dim_for_p(blocks[b]["n_snps"], cfg))
+            for i, b in enumerate(block_ids)]
     pd.DataFrame(meta).to_csv(out/"block_order.csv", index=False)
+
+    # ---- PCA baseline embeddings (Phase 2 compatible) ----
+    print(f"\n{'═'*55}\n  Loss: PCA (baseline)\n{'═'*55}")
+    pca_ld = out / "PCA"
+    (pca_ld / "embeddings").mkdir(parents=True, exist_ok=True)
+
+    pca_standardize = cfg.get("pca", {}).get("standardize", True)
+    print(f"  pca_standardize={pca_standardize}")
+
+    pca_emb_dict: dict = {}
+    pca_rows: list = []
+
+    for bid in block_ids:
+        G_pca = blocks[bid]["geno"]
+        p_pca = G_pca.shape[1]
+        d_pca = latent_dim_for_p(p_pca, cfg)
+        print(f"\n  ── {bid} ({p_pca} SNPs, latent_dim={d_pca}) ──")
+        try:
+            emb_pca_raw, pca_model, n_comp_used = extract_pca_block_emb(G_pca, tr_ix, d_pca)
+            evr = pca_model.explained_variance_ratio_
+
+            raw_mean_abs = float(np.abs(emb_pca_raw).mean())
+            raw_std = float(emb_pca_raw.std())
+
+            if pca_standardize:
+                scaler = StandardScaler()
+                scaler.fit(emb_pca_raw[tr_ix])
+                emb_pca = scaler.transform(emb_pca_raw).astype(np.float32)
+            else:
+                emb_pca = emb_pca_raw
+
+            scaled_mean_abs = float(np.abs(emb_pca).mean())
+            scaled_std = float(emb_pca.std())
+
+            pca_emb_dict[bid] = emb_pca
+            np.save(pca_ld / "embeddings" / f"{bid}.npy", emb_pca)
+            pca_rows.append(dict(
+                block_id=bid,
+                gene=blocks[bid]["gene"],
+                n_snps=p_pca,
+                latent_dim=d_pca,
+                n_components_used=n_comp_used,
+                explained_variance_ratio_sum=round(float(evr.sum()), 4),
+                explained_variance_ratio_pc1=round(float(evr[0]), 4),
+                raw_mean_abs=round(raw_mean_abs, 6),
+                raw_std=round(raw_std, 6),
+                scaled_mean_abs=round(scaled_mean_abs, 6),
+                scaled_std=round(scaled_std, 6),
+            ))
+            print(
+                f"      n_comp={n_comp_used} | explained_var={evr.sum():.4f} | "
+                f"raw_std={raw_std:.4f} → scaled_std={scaled_std:.4f}"
+            )
+        except Exception as exc:
+            print(f"[pca_embeddings] WARNING: {bid} failed — {exc}")
+
+    if pca_emb_dict:
+        pca_dims_full = np.array([
+            pca_emb_dict[b].shape[1] if b in pca_emb_dict
+            else latent_dim_for_p(blocks[b]["n_snps"], cfg)
+            for b in block_ids
+        ], dtype=np.int32)
+        pca_max_d = int(pca_dims_full.max())
+        N_pca = next(iter(pca_emb_dict.values())).shape[0]
+        B_pca = len(block_ids)
+        pca_stack = np.zeros((N_pca, B_pca, pca_max_d), dtype=np.float32)
+        for j, b in enumerate(block_ids):
+            if b in pca_emb_dict:
+                e = pca_emb_dict[b].astype(np.float32)
+                pca_stack[:, j, :e.shape[1]] = e
+        np.save(pca_ld / "embeddings" / "all_blocks.npy", pca_stack)
+        np.save(pca_ld / "embeddings" / "all_blocks_latent_dims.npy", pca_dims_full)
+        pd.DataFrame({"IID": subjects}).to_csv(pca_ld / "subjects.csv", index=False)
+        # Use actual clamped dims, not requested d_block, so Phase 2 latent mask is correct.
+        pca_block_meta = [
+            {**m, "latent_dim": int(pca_dims_full[i])} for i, m in enumerate(meta)
+        ]
+        pd.DataFrame(pca_block_meta).to_csv(pca_ld / "block_order.csv", index=False)
+        pd.DataFrame(pca_rows).to_csv(pca_ld / "pca_summary.csv", index=False)
+        print(
+            f"\n  stacked PCA embeddings (padded) {pca_stack.shape} | max_d={pca_max_d} | "
+            f"dims={dict(pd.Series(pca_dims_full).value_counts().sort_index())}"
+        )
+    else:
+        print("[pca_embeddings] WARNING: no PCA embeddings produced — PCA/ folder not written")
 
     # ---- summary table ----
     sdf = pd.DataFrame(rows)
@@ -1226,10 +1622,96 @@ def run_phase1(cfg, *, config_path=None):
     print(f"\n{'═'*55}\n  Phase 1 complete — summary\n{'═'*55}")
     print(sdf.to_string(index=False, max_cols=None))
 
+    # ---- aggregate summary (paper-style, one row per loss function) ----
+    agg_rows = []
+    for lt_agg in sdf["loss"].unique():
+        sub = sdf[sdf["loss"] == lt_agg].copy()
+        w = sub["n_snps"].values.astype(np.float64)
+        total_snps = int(sub["n_snps"].sum())
+        total_latent = int(sub["latent_dim"].sum())
+
+        conc_vals = sub["conc_va"].values.astype(np.float64)
+        weighted_conc = float(np.nansum(conc_vals * w) / np.nansum(np.where(np.isfinite(conc_vals), w, 0)))
+
+        pca_vals = sub["pca_conc_va"].values.astype(np.float64) if "pca_conc_va" in sub.columns else np.full(len(sub), np.nan)
+        valid = np.isfinite(pca_vals)
+        weighted_pca = (
+            float(np.sum(pca_vals[valid] * w[valid]) / (np.sum(w[valid]) + 1e-12))
+            if valid.any() else float("nan")
+        )
+        vae_minus_pca = round(weighted_conc - weighted_pca, 4) if np.isfinite(weighted_pca) else float("nan")
+
+        # test weighted metrics
+        conc_te_vals = sub["conc_test"].values.astype(np.float64) if "conc_test" in sub.columns else np.full(len(sub), np.nan)
+        valid_te = np.isfinite(conc_te_vals)
+        weighted_conc_te = (
+            float(np.sum(conc_te_vals[valid_te] * w[valid_te]) / (np.sum(w[valid_te]) + 1e-12))
+            if valid_te.any() else float("nan")
+        )
+        pca_te_vals = sub["pca_conc_test"].values.astype(np.float64) if "pca_conc_test" in sub.columns else np.full(len(sub), np.nan)
+        valid_te_pca = np.isfinite(pca_te_vals)
+        weighted_pca_te = (
+            float(np.sum(pca_te_vals[valid_te_pca] * w[valid_te_pca]) / (np.sum(w[valid_te_pca]) + 1e-12))
+            if valid_te_pca.any() else float("nan")
+        )
+        vae_minus_pca_te = round(weighted_conc_te - weighted_pca_te, 4) if np.isfinite(weighted_conc_te) and np.isfinite(weighted_pca_te) else float("nan")
+
+        agg_rows.append({
+            "loss": lt_agg,
+            "n_blocks": len(sub),
+            "total_snps": total_snps,
+            "total_latent_dim": total_latent,
+            "overall_compression_ratio": round(total_latent / (total_snps + 1e-12), 6),
+            "weighted_conc_va": round(weighted_conc, 4),
+            "weighted_pca_conc_va": round(weighted_pca, 4) if np.isfinite(weighted_pca) else float("nan"),
+            "weighted_vae_minus_pca_conc_va": vae_minus_pca,
+            "mean_bal_acc_va": round(float(sub["bal_acc_va"].mean()), 4),
+            "mean_acc0_va": round(float(sub["acc0_va"].mean()), 4),
+            "mean_acc1_va": round(float(sub["acc1_va"].mean()), 4),
+            "mean_acc2_va": round(float(sub["acc2_va"].mean()), 4),
+            "mean_r2_va": round(float(sub["r2_va"].mean()), 4),
+            "mean_pca_r2_va": round(float(sub["pca_r2_va"].mean()), 4) if "pca_r2_va" in sub.columns else float("nan"),
+            "mean_ld_corr_va": round(float(sub["ld_corr_va"].mean()), 4),
+            "weighted_conc_test": round(weighted_conc_te, 4) if np.isfinite(weighted_conc_te) else float("nan"),
+            "weighted_pca_conc_test": round(weighted_pca_te, 4) if np.isfinite(weighted_pca_te) else float("nan"),
+            "weighted_vae_minus_pca_conc_test": vae_minus_pca_te,
+            "mean_bal_acc_test": round(float(sub["bal_acc_test"].mean()), 4) if "bal_acc_test" in sub.columns else float("nan"),
+            "mean_acc0_test": round(float(sub["acc0_test"].mean()), 4) if "acc0_test" in sub.columns else float("nan"),
+            "mean_acc1_test": round(float(sub["acc1_test"].mean()), 4) if "acc1_test" in sub.columns else float("nan"),
+            "mean_acc2_test": round(float(sub["acc2_test"].mean()), 4) if "acc2_test" in sub.columns else float("nan"),
+            "mean_r2_test": round(float(sub["r2_test"].mean()), 4) if "r2_test" in sub.columns else float("nan"),
+            "mean_pca_r2_test": round(float(sub["pca_r2_test"].mean()), 4) if "pca_r2_test" in sub.columns else float("nan"),
+            "mean_ld_corr_test": round(float(sub["ld_corr_test"].mean()), 4) if "ld_corr_test" in sub.columns else float("nan"),
+        })
+
+    agg_df = pd.DataFrame(agg_rows)
+    agg_df.to_csv(out / "phase1_aggregate_summary.csv", index=False)
+    for _, agg_row in agg_df.iterrows():
+        wpca_va  = f"{agg_row['weighted_pca_conc_va']:.4f}"   if np.isfinite(float(agg_row["weighted_pca_conc_va"]))   else "nan"
+        wvae_te  = f"{agg_row['weighted_conc_test']:.4f}"     if np.isfinite(float(agg_row["weighted_conc_test"]))     else "nan"
+        wpca_te  = f"{agg_row['weighted_pca_conc_test']:.4f}" if np.isfinite(float(agg_row["weighted_pca_conc_test"])) else "nan"
+        print(
+            f"[phase1][{agg_row['loss']}] aggregate: "
+            f"{agg_row['total_snps']} SNPs | "
+            f"{agg_row['total_latent_dim']} latent dims | "
+            f"compression {agg_row['overall_compression_ratio']:.4f} | "
+            f"val  VAE {agg_row['weighted_conc_va']:.4f} vs PCA {wpca_va} | "
+            f"test VAE {wvae_te} vs PCA {wpca_te}"
+        )
+
     # ---- representative blocks selection ----
     if not manual_rep:
         rep_blocks = select_representative_blocks(sdf, cfg, block_ids)
         rep_blocks_set = set(rep_blocks)
+        # write confusion matrices for auto-selected blocks from cache
+        for bid in rep_blocks_set:
+            rep_dir = out_rep / bid
+            rep_dir.mkdir(exist_ok=True)
+            for lt in cfg["loss_functions"]:
+                _cm = _cm_cache.get((lt, bid))
+                if _cm is not None:
+                    np.save(rep_dir / f"{bid}_{lt}_confusion.npy", _cm)
+                    plot_confusion_matrix(_cm, bid, lt, rep_dir)
     
     # ---- output organization ----
     out_summary = out / "summary"
@@ -1240,7 +1722,7 @@ def run_phase1(cfg, *, config_path=None):
     out_rep.mkdir(exist_ok=True)
     
     # Move summary
-    sdf.to_csv(out_summary / "vae_summary.csv", index=False)
+    agg_df.to_csv(out_summary / "phase1_aggregate_summary.csv", index=False)
     
     # Aggregate plots
     plot_aggregate_boxes(sdf, out_agg_plots)
@@ -1283,7 +1765,144 @@ def run_phase1(cfg, *, config_path=None):
 
 
 # ──────────────────────────────────────────────────────────────────
-# 8.  CLI  (validate_cfg merged from 01_phase1_block_embedding.py)
+# 8.  PCA-ONLY  REGENERATION
+# ──────────────────────────────────────────────────────────────────
+def run_pca_only(cfg, *, config_path=None):
+    """Regenerate PCA/ baseline folder only, reusing existing train/val/test split.
+
+    Raises FileNotFoundError if split index files are missing from output_dir —
+    they must be created by a prior run_phase1() call; we never create a new split.
+    """
+    t0_run = time.time()
+    out = Path(cfg["data"]["output_dir"])
+
+    # ---- require existing split indices ----
+    for fname in ("train_idx.npy", "val_idx.npy", "test_idx.npy"):
+        fp = out / fname
+        if not fp.exists():
+            raise FileNotFoundError(
+                f"[pca-only] Required split file missing: {fp}\n"
+                "Run run_phase1 (or VAE_phase1.py without --pca-only) first to create the split."
+            )
+    tr_ix   = np.load(out / "train_idx.npy")
+    va_ix   = np.load(out / "val_idx.npy")
+    test_ix = np.load(out / "test_idx.npy")
+    print(f"[pca-only] reusing split: train={len(tr_ix)} val={len(va_ix)} test={len(test_ix)}")
+
+    # ---- load blocks ----
+    print("\n══════ Loading data (pca-only) ══════")
+    bdf = load_block_defs(cfg["data"]["block_def"])
+    blocks, subjects, block_ids = load_all_blocks(bdf, cfg["data"]["raw_dir"])
+
+    # ---- PCA ----
+    pca_ld = out / "PCA"
+    (pca_ld / "embeddings").mkdir(parents=True, exist_ok=True)
+
+    pca_standardize = cfg.get("pca", {}).get("standardize", True)
+    print(f"  pca_standardize={pca_standardize}")
+
+    pca_emb_dict: dict = {}
+    pca_rows: list = []
+
+    for bid in block_ids:
+        G_pca = blocks[bid]["geno"]
+        p_pca = G_pca.shape[1]
+        d_pca = latent_dim_for_p(p_pca, cfg)
+        print(f"\n  ── {bid} ({p_pca} SNPs, latent_dim={d_pca}) ──")
+        try:
+            emb_pca_raw, pca_model, n_comp_used = extract_pca_block_emb(G_pca, tr_ix, d_pca)
+            evr = pca_model.explained_variance_ratio_
+
+            raw_mean_abs = float(np.abs(emb_pca_raw).mean())
+            raw_std = float(emb_pca_raw.std())
+
+            if pca_standardize:
+                scaler = StandardScaler()
+                scaler.fit(emb_pca_raw[tr_ix])
+                emb_pca = scaler.transform(emb_pca_raw).astype(np.float32)
+            else:
+                emb_pca = emb_pca_raw
+
+            scaled_mean_abs = float(np.abs(emb_pca).mean())
+            scaled_std = float(emb_pca.std())
+
+            pca_emb_dict[bid] = emb_pca
+            np.save(pca_ld / "embeddings" / f"{bid}.npy", emb_pca)
+            pca_rows.append(dict(
+                block_id=bid,
+                gene=blocks[bid]["gene"],
+                n_snps=p_pca,
+                latent_dim=d_pca,
+                n_components_used=n_comp_used,
+                explained_variance_ratio_sum=round(float(evr.sum()), 4),
+                explained_variance_ratio_pc1=round(float(evr[0]), 4),
+                raw_mean_abs=round(raw_mean_abs, 6),
+                raw_std=round(raw_std, 6),
+                scaled_mean_abs=round(scaled_mean_abs, 6),
+                scaled_std=round(scaled_std, 6),
+            ))
+            print(
+                f"      n_comp={n_comp_used} | explained_var={evr.sum():.4f} | "
+                f"raw_std={raw_std:.4f} → scaled_std={scaled_std:.4f}"
+            )
+        except Exception as exc:
+            print(f"[pca_embeddings] WARNING: {bid} failed — {exc}")
+
+    if not pca_emb_dict:
+        raise RuntimeError("[pca-only] No PCA embeddings produced — check block data.")
+
+    # ---- stack + save ----
+    # Read block_order.csv for gene/n_snps metadata (written by earlier run_phase1).
+    # If not present, build it from loaded blocks.
+    block_order_fp = out / "block_order.csv"
+    if block_order_fp.exists():
+        meta_df = pd.read_csv(block_order_fp)
+        meta = meta_df.to_dict("records")
+    else:
+        meta = [dict(pos=i, block_id=b, gene=blocks[b]["gene"],
+                     n_snps=blocks[b]["n_snps"],
+                     latent_dim=latent_dim_for_p(blocks[b]["n_snps"], cfg))
+                for i, b in enumerate(block_ids)]
+
+    pca_dims_full = np.array([
+        pca_emb_dict[b].shape[1] if b in pca_emb_dict
+        else latent_dim_for_p(blocks[b]["n_snps"], cfg)
+        for b in block_ids
+    ], dtype=np.int32)
+    pca_max_d = int(pca_dims_full.max())
+    N_pca = next(iter(pca_emb_dict.values())).shape[0]
+    B_pca = len(block_ids)
+    pca_stack = np.zeros((N_pca, B_pca, pca_max_d), dtype=np.float32)
+    for j, b in enumerate(block_ids):
+        if b in pca_emb_dict:
+            e = pca_emb_dict[b].astype(np.float32)
+            pca_stack[:, j, :e.shape[1]] = e
+
+    np.save(pca_ld / "embeddings" / "all_blocks.npy", pca_stack)
+    np.save(pca_ld / "embeddings" / "all_blocks_latent_dims.npy", pca_dims_full)
+    pd.DataFrame({"IID": subjects}).to_csv(pca_ld / "subjects.csv", index=False)
+    pca_block_meta = [
+        {**m, "latent_dim": int(pca_dims_full[i])} for i, m in enumerate(meta)
+    ]
+    pd.DataFrame(pca_block_meta).to_csv(pca_ld / "block_order.csv", index=False)
+    pd.DataFrame(pca_rows).to_csv(pca_ld / "pca_summary.csv", index=False)
+
+    print(
+        f"\n  stacked PCA embeddings (padded) {pca_stack.shape} | max_d={pca_max_d} | "
+        f"dims={dict(pd.Series(pca_dims_full).value_counts().sort_index())}"
+    )
+    _write_run_metadata(
+        pca_ld,
+        config_path=config_path or out / "config_phase1.yaml",
+        cfg=cfg,
+        t0=t0_run,
+        t1=time.time(),
+    )
+    print(f"\n[pca-only] complete (took {time.time() - t0_run:.1f}s)")
+
+
+# ──────────────────────────────────────────────────────────────────
+# 9.  CLI  (validate_cfg merged from 01_phase1_block_embedding.py)
 # ──────────────────────────────────────────────────────────────────
 def validate_cfg(cfg):
     """Pre-flight checks: verify required paths exist and create output dir."""
@@ -1305,6 +1924,8 @@ if __name__ == "__main__":
     ap.add_argument("--config", default=None, help="Path to Phase1 config YAML (default: configs/config_phase1.yaml)")
     ap.add_argument("--tune", action="store_true", help="Run hyperparameter tuning mode")
     ap.add_argument("--dry-run", action="store_true", help="Display configuration without running")
+    ap.add_argument("--pca-only", action="store_true",
+                    help="Regenerate PCA/ baseline folder only; reuses existing train/val/test split from output_dir")
     ap.add_argument("--save-config", action="store_true",
                     help="write default YAML and exit")
     args = ap.parse_args()
@@ -1331,17 +1952,30 @@ if __name__ == "__main__":
     print(f"[phase1] output_dir={out_dir}")
 
     if args.dry_run:
+        if args.pca_only:
+            for fname in ("train_idx.npy", "val_idx.npy", "test_idx.npy"):
+                fp = out_dir / fname
+                status = "EXISTS" if fp.exists() else "MISSING"
+                print(f"[dry-run][pca-only] split file {fname}: {status}")
         print("[phase1] dry-run complete; no pipeline executed.")
         sys.exit(0)
 
     t0 = time.time()
-    if args.tune:
+    if args.pca_only:
+        run_pca_only(cfg, config_path=resolved_config)
+    elif args.tune:
         run_tuning(cfg)
     else:
         run_phase1(cfg, config_path=resolved_config)
 
     # Post-run output validation
-    if args.tune:
+    if args.pca_only:
+        pca_emb_dir = out_dir / "PCA" / "embeddings"
+        if pca_emb_dir.exists() and (pca_emb_dir / "all_blocks.npy").exists():
+            print(f"[validation] PCA embeddings found: {pca_emb_dir}")
+        else:
+            print(f"[validation] WARNING: no PCA embeddings at {pca_emb_dir}")
+    elif args.tune:
         tuning_dir = out_dir / "tuning"
         for p in [tuning_dir / "best_params.yaml",
                   tuning_dir / "tuning_results.csv",
@@ -1361,6 +1995,11 @@ if __name__ == "__main__":
                 print(f"[validation] embeddings found for {lt}")
             else:
                 print(f"[validation] WARNING: no embeddings for {lt}")
+        pca_emb_dir = out_dir / "PCA" / "embeddings"
+        if pca_emb_dir.exists() and (pca_emb_dir / "all_blocks.npy").exists():
+            print(f"[validation] embeddings found for PCA")
+        else:
+            print(f"[validation] WARNING: no embeddings for PCA")
         print(f"[validation] phase1 complete: {out_dir}")
 
     print(f"\n[phase1] complete (took {time.time() - t0:.1f}s)")

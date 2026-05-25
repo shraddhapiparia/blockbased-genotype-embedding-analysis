@@ -55,7 +55,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_EMBEDDINGS = "results/output_regions2/ORD/embeddings/individual_embeddings.csv"
+DEFAULT_EMBEDDINGS = "results/output_regions2/ORD_W_Scaled/embeddings/individual_embeddings.csv"
 DEFAULT_CLINICAL   = "metadata/2022-07-21_Endotype_CRA.tsv"
 DEFAULT_EIGENVEC   = "metadata/ldpruned_997subs.eigenvec"
 DEFAULT_OUT        = "results/analysis/clinical_pc_embedding_alignment_cra"

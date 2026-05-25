@@ -21,7 +21,7 @@ losing local genomic context. This project takes a hierarchical approach:
 
 1. **Phase 1 — Per-block β-VAE.** Each LD block is encoded independently into a
    low-dimensional latent vector that captures local haplotype structure.
-2. **Phase 2 — Cross-block Transformer.** A Transformer aggregates all block embeddings
+2. **Phase 2 — Cross-block Attention.** Phase 2 aggregates all block embeddings
    into a single subject-level representation. Learned attention weights identify which
    blocks are most informative for organizing genetic variation across individuals.
 

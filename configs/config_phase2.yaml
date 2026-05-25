@@ -1,16 +1,17 @@
 phase1_dir: results/output_regions
 output_dir: results/output_regions2
 attention:
-  d_model: 64
+  d_model: 128
   n_heads: 4
   n_layers: 2
-  d_ff: 128
-  dropout: 0.1
+  d_ff: 512
+  n_pool_tokens: 4
+  dropout: 0.30
+  epochs: 150
+  patience: 20
   lr: 0.0005
-  weight_decay: 0.0001
+  weight_decay: 0.001
   batch_size: 64
-  epochs: 300
-  patience: 30
   grad_clip: 1.0
   seed: 42
   extract_self_attn: true
@@ -23,4 +24,4 @@ clustering:
   umap_n_neighbors: 15
   umap_min_dist: 0.1
   umap_seed: 42
-loss_functions: [ORD]
+loss_functions: [ORD_W_Scaled]

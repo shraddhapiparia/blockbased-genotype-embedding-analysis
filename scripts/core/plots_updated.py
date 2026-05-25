@@ -24,7 +24,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-DEFAULT_OUTDIR = "/Users/shraddh_mac/geno_ld_attention/geno_ld_attention/results/plots_regions"
+DEFAULT_OUTDIR = "/Users/shraddh_mac/Documents/GitHub/blockbased-genotype-embedding-analysis/results/plots_regions"
 
 
 # ----------------------------
@@ -143,11 +143,6 @@ def plot_runtime_vs_perf(df: pd.DataFrame, losses: list[str], outdir: Path) -> N
     plt.title("Runtime vs performance")
     plt.legend(frameon=False, ncol=min(3, len(losses)))
     savefig(outdir / "scatter_runtime_vs_bal_acc.png")
-
-
-# ----------------------------
-# NEW visuals you requested
-# ----------------------------
 
 # 1) Per-class recall heatmap faceted by loss
 def plot_per_class_heatmaps(df: pd.DataFrame, losses: list[str], outdir: Path) -> None:
@@ -365,9 +360,9 @@ def plot_kl_over_epochs(phase1_dir: Path, df_summary: pd.DataFrame, losses: list
 # ----------------------------
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase1_dir", type=str, default="/Users/shraddh_mac/geno_ld_attention/geno_ld_attention/results/output_regions",
+    ap.add_argument("--phase1_dir", type=str, default="/Users/shraddh_mac/Documents/GitHub/blockbased-genotype-embedding-analysis/results/output_regions",
                     help="Path to Phase-1 output directory (contains vae_summary_ord.csv and per-loss logs/).")
-    ap.add_argument("--summary_csv", type=str, default="vae_summary_ord.csv",
+    ap.add_argument("--summary_csv", type=str, default="vae_summary.csv",
                     help="Summary CSV filename inside phase1_dir.")
     ap.add_argument("--outdir", type=str, default=DEFAULT_OUTDIR,
                     help="Directory to save plot PNGs.")
@@ -375,7 +370,7 @@ def main() -> None:
                     help="Optional explicit list of losses to plot (e.g. --losses ORD MSE MSE_STD CAT BCE).")
     ap.add_argument("--k", type=int, default=None,
                     help="Optional: number of loss types to plot (uses prefer-first ordering). If omitted, uses all.")
-    ap.add_argument("--prefer", type=str, nargs="*", default=["ORD", "MSE", "MSE_STD", "CAT", "BCE"],
+    ap.add_argument("--prefer", type=str, nargs="*", default=["ORD_W_Scaled", "ORD", "MSE", "MSE_STD", "CAT", "BCE"],
                     help="Preferred ordering used when selecting all or when --k is set.")
     args = ap.parse_args()
 
@@ -403,7 +398,6 @@ def main() -> None:
                      "Validation LD-correlation distribution by loss", "ld_corr_va")
     plot_runtime_vs_perf(dsel, losses, outdir)
 
-    # ----- New requested visuals -----
     # 1) per-class recall heatmap per loss
     plot_per_class_heatmaps(dsel, losses, outdir)
 
